@@ -1,0 +1,181 @@
+# nusadb-jdbc — JDBC driver for NusaDB
+
+A pure-Java JDBC driver that speaks the [Nusa Wire Protocol](../../docs/wire-protocol.md)
+(`PROTOCOL_VERSION 1.1`) directly over a socket. No native code, no third-party
+dependencies — SCRAM-SHA-256 uses the JDK's `javax.crypto`. Requires Java 17+.
+`ResultSetMetaData.getColumnType` / `getColumnTypeName` report each column's NusaDB type
+(protocol 1.1).
+
+## Usage
+
+```java
+import java.sql.*;
+
+// The driver registers itself; explicit Class.forName is optional on modern JVMs.
+String url = "jdbc:nusadb://nusa-root@127.0.0.1:5678/nusadb";
+try (Connection conn = DriverManager.getConnection(url)) {
+    try (Statement st = conn.createStatement()) {
+        st.execute("CREATE TABLE t (id INT NOT NULL, name TEXT)");
+    }
+    try (PreparedStatement ps = conn.prepareStatement("INSERT INTO t VALUES ($1, $2)")) {
+        ps.setInt(1, 1);
+        ps.setString(2, "alice");
+        ps.executeUpdate();
+    }
+    try (Statement st = conn.createStatement();
+         ResultSet rs = st.executeQuery("SELECT id, name FROM t")) {
+        while (rs.next()) {
+            System.out.println(rs.getInt("id") + " " + rs.getString("name"));
+        }
+    }
+}
+```
+
+### URL
+
+```
+jdbc:nusadb://[user[:password]@]host[:port]/database
+```
+
+`user` / `password` may also be passed via the `Properties` argument to
+`DriverManager.getConnection`. Placeholders are positional `$1`, `$2`, ….
+
+### Authentication
+
+For a server started with `--auth-user USER:PASSWORD`, supply the password; the
+driver runs SCRAM-SHA-256 and verifies the server signature (mutual auth).
+
+### Batch updates
+
+`Statement.addBatch(String)` / `PreparedStatement.addBatch()` + `executeBatch()` are supported for
+bulk DML (and `DatabaseMetaData.supportsBatchUpdates()` returns `true`). `executeBatch()` returns
+the per-entry update counts. The wire protocol has no batch pipeline, so a batch is sent as one
+statement per entry (N round-trips), reusing a single prepared statement for the parameterised form.
+
+```java
+try (PreparedStatement ps = conn.prepareStatement("INSERT INTO t VALUES ($1, $2)")) {
+    for (var row : rows) {
+        ps.setInt(1, row.id);
+        ps.setString(2, row.name);
+        ps.addBatch();
+    }
+    int[] counts = ps.executeBatch();
+}
+```
+
+### Bulk load / export (`COPY`)
+
+For high-throughput load/export, `NusaCopyManager` drives the `COPY` sub-protocol — one round-trip
+for the whole dataset. Unwrap it from the connection, then move bytes in the server's text format
+(tab-delimited fields, `\N` for SQL `NULL`, one row per line). You write the `COPY` statement, with
+any `WITH (...)` options.
+
+```java
+NusaCopyManager copy = conn.unwrap(NusaCopyManager.class);
+
+// Bulk load from any InputStream.
+byte[] data = "1\talice\n2\t\\N\n3\tcarol\n".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+long loaded = copy.copyIn("COPY t (id, name) FROM STDIN", new java.io.ByteArrayInputStream(data));
+
+// Bulk export into any OutputStream.
+var out = new java.io.ByteArrayOutputStream();
+long exported = copy.copyOut("COPY t TO STDOUT", out);
+```
+
+A source read error sends `CopyFail`, and a `COPY` the server refuses (bad SQL, an RLS-protected
+table) throws — either way the connection is left ready for the next statement.
+
+## Transactions
+
+Both autocommit (the default) and explicit transactions are supported. With
+autocommit on, the server runs each statement on its own implicit transaction.
+Call `setAutoCommit(false)` to begin a unit of work: a `BEGIN` is sent lazily
+before the first statement, and `commit()` / `rollback()` close it with
+`COMMIT` / `ROLLBACK` over the wire. Switching back with `setAutoCommit(true)`
+commits any open transaction (JDBC semantics); closing the connection while a
+transaction is open rolls it back.
+
+Inside a transaction, the JDBC savepoint API is supported: `setSavepoint()` /
+`setSavepoint(name)` mark a point, `rollback(savepoint)` undoes to it while keeping the
+transaction open, and `releaseSavepoint(savepoint)` forgets it.
+
+```java
+conn.setAutoCommit(false);
+try (Statement st = conn.createStatement()) {
+    st.executeUpdate("INSERT INTO t VALUES (1, 'alice')");
+    conn.commit();              // or conn.rollback() to discard
+}
+```
+
+`DatabaseMetaData` is implemented: the introspection a GUI tool such as DBeaver uses
+to build its schema tree — `getSchemas`, `getTableTypes`, `getTables`, `getColumns`,
+`getTypeInfo` — is answered from the server's `information_schema` views. `getCatalogs`
+lists every database in the cluster via `SELECT name FROM nusadb_databases` — NusaDB's own
+system catalog (not `information_schema`, which the engine scopes to the connected database) —
+so the tree shows all databases as siblings.
+Because NusaDB is engine-per-database, a connection can still only query its own catalog —
+browsing another database opens a new connection.
+Primary keys (`getPrimaryKeys`) and indexes (`getIndexInfo`) are likewise answered from
+the `information_schema.table_constraints` / `key_column_usage` / `statistics` views, so a
+tool's schema tree shows PK badges and index lists. `getColumns` reports `COLUMN_SIZE` /
+`DECIMAL_DIGITS` from the reflected `character_maximum_length` (`VARCHAR(n)`/`CHAR(n)`) and
+`numeric_precision`/`numeric_scale` (`NUMERIC(p,s)`). Relational metadata NusaDB does not
+model yet (foreign keys, procedures) returns an empty result of the JDBC-specified shape.
+
+`getGeneratedKeys` is supported for INSERTs: when a statement is executed with
+`Statement.RETURN_GENERATED_KEYS` (or a column-name list), the driver appends a
+`RETURNING` clause and exposes the resulting row(s) through `getGeneratedKeys()` — so
+`@GeneratedValue` / auto-increment keys round-trip. (Column-*index* requests return all
+columns, since indexes can't be mapped to names without statement metadata.)
+
+`BYTEA` columns round-trip as `byte[]`: `setBytes` / `setObject(byte[])` send the value as
+the `\x<hex>` text form (which the server coerces into the `BYTEA` column), and `getBytes`
+decodes a BYTEA column's `\x<hex>` back to the raw bytes.
+
+`getObject` returns the Java type matching each column's SQL type: `BOOL` → `Boolean`,
+`INT` → `Long`, `FLOAT` → `Double`, `NUMERIC` → `BigDecimal`, `DATE`/`TIME`/`TIMESTAMP` →
+`java.sql.Date`/`Time`/`Timestamp`, `UUID` → `java.util.UUID`, `BYTEA` → `byte[]`; `TEXT`,
+`JSON`, `ARRAY`, and other types come back as `String`. The typed getters (`getInt`,
+`getBigDecimal`, `getTimestamp`, …) parse any column on demand regardless.
+
+Scrollable/updatable result sets, LOBs, and TLS are not yet implemented and throw
+`SQLFeatureNotSupportedException` where called. The supported core (Statement,
+PreparedStatement, ResultSet getters, transactions, `DatabaseMetaData`, generated keys,
+`BYTEA`, SCRAM auth) is fully functional.
+
+## Notifications (LISTEN/NOTIFY)
+
+JDBC has no standard notification surface, so reach it by unwrapping the connection to
+`NusaListener`. `listen(channel)` subscribes; a `notify(channel, payload)` from any connection on the
+same database is delivered asynchronously. `pollNotification(timeoutMillis)` waits for the next one
+(`0` blocks), or `getNotifications()` drains those buffered during other queries:
+
+```java
+NusaListener l = conn.unwrap(NusaListener.class);
+l.listen("orders");
+// ... elsewhere: l.notify("orders", "42");
+NusaNotification note = l.pollNotification(5000); // -> NusaNotification, or null on timeout
+System.out.println(note.getChannel() + " " + note.getPayload());
+l.unlisten("orders");
+```
+
+## Build & test
+
+No Maven required to try it:
+
+```bash
+cargo build -p nusadb-server
+cd drivers/java
+javac -d build/classes src/main/java/com/nusadb/jdbc/*.java
+javac -cp build/classes -d build/test-classes src/test/java/com/nusadb/jdbc/DriverTest.java
+java -cp "build/classes:build/test-classes" com.nusadb.jdbc.DriverTest
+```
+
+(On Windows use `;` as the classpath separator.) The test boots a real
+`nusadb-server` on an ephemeral port (honouring `CARGO_TARGET_DIR`) and covers
+queries, parameters, prepared statements, errors, the transaction rejection, and
+SCRAM auth. A `pom.xml` is provided for Maven users.
+
+## License
+
+Apache-2.0.
