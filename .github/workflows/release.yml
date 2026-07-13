@@ -1,0 +1,119 @@
+name: Release
+
+# Publishes three artifacts to Maven Central via the Sonatype Central Portal:
+#   com.nusadb:nusadb-jdbc
+#   com.nusadb:nusadb-hibernate5
+#   com.nusadb:nusadb-hibernate6
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# The driver is deployed FIRST and with <waitUntil>published</waitUntil>: both dialects
+# depend on com.nusadb:nusadb-jdbc, so it has to be resolvable on Central before artifacts
+# referencing it are validated.
+#
+# Required secrets:
+#   MAVEN_CENTRAL_USERNAME  -- Central Portal user token name
+#   MAVEN_CENTRAL_PASSWORD  -- Central Portal user token password
+#   GPG_PRIVATE_KEY         -- ASCII-armoured private key (gpg --armor --export-secret-keys KEYID)
+#   GPG_PASSPHRASE          -- that key's passphrase
+#
+# One-time setup: the `com.nusadb` namespace must be verified at central.sonatype.com, and
+# the public half of the GPG key must be pushed to a keyserver (e.g. keyserver.ubuntu.com),
+# or Central will reject the signatures.
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: maven-central
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          # Writes a settings.xml whose <server><id> is `central`, matching
+          # <publishingServerId> in the release profile of each pom.
+          server-id: central
+          server-username: MAVEN_USERNAME
+          server-password: MAVEN_PASSWORD
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          gpg-passphrase: MAVEN_GPG_PASSPHRASE
+
+      # Four places carry the version: the three <project><version> fields, plus the
+      # nusadb-jdbc <dependency><version> inside each dialect. If the dialects pin an older
+      # driver they would ship pointing at the wrong artifact, so check all of them.
+      - name: Verify every version matches the tag
+        run: |
+          python3 - <<'PY'
+          import os, sys, xml.etree.ElementTree as ET
+
+          NS = {"m": "http://maven.apache.org/POM/4.0.0"}
+          tag = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          errors = []
+
+          for pom in ("pom.xml", "hibernate5/pom.xml", "hibernate6/pom.xml"):
+              root = ET.parse(pom).getroot()
+
+              version = root.findtext("m:version", namespaces=NS)
+              if version != tag:
+                  errors.append(f"{pom}: <version> is {version}, expected {tag}")
+
+              for dep in root.findall(".//m:dependency", NS):
+                  if dep.findtext("m:artifactId", namespaces=NS) == "nusadb-jdbc":
+                      dv = dep.findtext("m:version", namespaces=NS)
+                      if dv != tag:
+                          errors.append(
+                              f"{pom}: depends on nusadb-jdbc {dv}, expected {tag}"
+                          )
+
+          for e in errors:
+              print(f"::error::{e}")
+          if errors:
+              sys.exit(1)
+          print(f"all poms agree on {tag}")
+          PY
+
+      # -DskipTests: the only test class (DriverTest) boots a real `nusadb-server` binary,
+      # which is not present in this repository, so it cannot gate the release.
+      - name: Deploy the JDBC driver
+        env:
+          MAVEN_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: mvn -B -ntp -Prelease -DskipTests deploy
+
+      - name: Deploy the Hibernate 5 dialect
+        env:
+          MAVEN_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: mvn -B -ntp -Prelease -DskipTests -f hibernate5/pom.xml deploy
+
+      - name: Deploy the Hibernate 6 dialect
+        env:
+          MAVEN_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: mvn -B -ntp -Prelease -DskipTests -f hibernate6/pom.xml deploy
+
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" --generate-notes --verify-tag

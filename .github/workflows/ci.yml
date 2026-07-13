@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [master, 'ci/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        java: ['17', '21']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: maven
+
+      # The three modules are independent poms, not an aggregator, and the dialects depend on
+      # com.nusadb:nusadb-jdbc. Install the driver first so the dialects resolve it from the
+      # local repository instead of reaching for a version that is not on Central yet.
+      #
+      # -DskipTests: the only test class (DriverTest) boots a real `nusadb-server` binary,
+      # which is not present in this repository.
+      - name: Build and install the JDBC driver
+        run: mvn -B -ntp -DskipTests install
+
+      - name: Build the Hibernate 5 dialect
+        run: mvn -B -ntp -DskipTests -f hibernate5/pom.xml install
+
+      - name: Build the Hibernate 6 dialect
+        run: mvn -B -ntp -DskipTests -f hibernate6/pom.xml install
+
+      # Compile the test sources even though they cannot be run -- this is what stops the
+      # test harness from silently rotting against driver API changes.
+      - name: Compile the test sources
+        run: mvn -B -ntp test-compile
+
+      - name: Verify the JDBC driver registers itself
+        run: |
+          jar="$(find target -maxdepth 1 -name 'nusadb-jdbc-*.jar' ! -name '*-sources.jar' ! -name '*-javadoc.jar' | head -1)"
+          echo "driver jar: $jar"
+          # DriverManager must find NusaDriver via the ServiceLoader / JDBC autoloading, and
+          # it must claim the jdbc:nusadb: URL scheme. Both are pure classpath concerns.
+          cat > /tmp/CheckDriver.java <<'EOF'
+          import java.sql.Driver;
+          import java.sql.DriverManager;
+          public class CheckDriver {
+              public static void main(String[] args) throws Exception {
+                  Driver d = DriverManager.getDriver("jdbc:nusadb://localhost:5432/db");
+                  if (d == null) throw new IllegalStateException("no driver registered for jdbc:nusadb:");
+                  if (!d.acceptsURL("jdbc:nusadb://localhost:5432/db")) {
+                      throw new IllegalStateException(d + " does not accept the jdbc:nusadb: scheme");
+                  }
+                  System.out.println("registered: " + d.getClass().getName()
+                      + " v" + d.getMajorVersion() + "." + d.getMinorVersion());
+              }
+          }
+          EOF
+          java -cp "$jar" /tmp/CheckDriver.java
+
+  # A release signs and uploads from this same pom. Catch a pom that Central would reject
+  # (missing scm/developers/licenses, a javadoc build that dies) here, on every push, rather
+  # than discovering it at tag time.
+  release-dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Build the release artifacts (unsigned)
+        run: |
+          # -Dgpg.skip: no signing key on a PR build; everything else in the release profile
+          # (sources jar, javadoc jar, Central's required metadata) is exercised for real.
+          mvn -B -ntp -Prelease -Dgpg.skip -DskipTests install
+          mvn -B -ntp -Prelease -Dgpg.skip -DskipTests -f hibernate5/pom.xml install
+          mvn -B -ntp -Prelease -Dgpg.skip -DskipTests -f hibernate6/pom.xml install
+
+      - name: Confirm sources and javadoc jars were produced
+        run: |
+          missing=0
+          for dir in . hibernate5 hibernate6; do
+            for kind in sources javadoc; do
+              if ! ls "$dir"/target/*-"$kind".jar >/dev/null 2>&1; then
+                echo "::error::$dir is missing its -$kind.jar (Maven Central requires it)"
+                missing=1
+              fi
+            done
+          done
+          exit $missing
