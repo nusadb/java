@@ -21,10 +21,20 @@ name: Release
 # the public half of the GPG key must be pushed to a keyserver (e.g. keyserver.ubuntu.com),
 # or Central will reject the signatures.
 
+#
+# Maven Central is immutable: a coordinate that has been published can never be redeployed.
+# A release that dies partway therefore cannot simply be re-run -- the modules that already
+# made it through would fail with "version already exists" and block the ones that did not.
+# So each module is skipped if its version is already on Central, which makes this workflow
+# resumable, and it can be dispatched by hand to finish a partial release.
+
 on:
   push:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
+  # Re-run against a branch to finish a release that failed partway. The version comes from
+  # the poms rather than the tag, and no GitHub Release is cut.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -52,40 +62,81 @@ jobs:
       # Four places carry the version: the three <project><version> fields, plus the
       # nusadb-jdbc <dependency><version> inside each dialect. If the dialects pin an older
       # driver they would ship pointing at the wrong artifact, so check all of them.
-      - name: Verify every version matches the tag
+      #
+      # On a tag the root pom must match the tag. On a manual dispatch there is no tag, so the
+      # root pom *is* the expected version and the other three places must agree with it.
+      - name: Resolve and verify the version
+        id: version
         run: |
           python3 - <<'PY'
           import os, sys, xml.etree.ElementTree as ET
 
           NS = {"m": "http://maven.apache.org/POM/4.0.0"}
-          tag = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          POMS = ("pom.xml", "hibernate5/pom.xml", "hibernate6/pom.xml")
+          roots = {p: ET.parse(p).getroot() for p in POMS}
+
+          if os.environ["GITHUB_REF_TYPE"] == "tag":
+              expected = os.environ["GITHUB_REF_NAME"].lstrip("v")
+              source = "the tag"
+          else:
+              expected = roots["pom.xml"].findtext("m:version", namespaces=NS)
+              source = "pom.xml"
+
           errors = []
-
-          for pom in ("pom.xml", "hibernate5/pom.xml", "hibernate6/pom.xml"):
-              root = ET.parse(pom).getroot()
-
+          for pom, root in roots.items():
               version = root.findtext("m:version", namespaces=NS)
-              if version != tag:
-                  errors.append(f"{pom}: <version> is {version}, expected {tag}")
+              if version != expected:
+                  errors.append(f"{pom}: <version> is {version}, expected {expected}")
 
               for dep in root.findall(".//m:dependency", NS):
                   if dep.findtext("m:artifactId", namespaces=NS) == "nusadb-jdbc":
                       dv = dep.findtext("m:version", namespaces=NS)
-                      if dv != tag:
+                      if dv != expected:
                           errors.append(
-                              f"{pom}: depends on nusadb-jdbc {dv}, expected {tag}"
+                              f"{pom}: depends on nusadb-jdbc {dv}, expected {expected}"
                           )
 
           for e in errors:
               print(f"::error::{e}")
           if errors:
               sys.exit(1)
-          print(f"all poms agree on {tag}")
+
+          print(f"all poms agree on {expected} (from {source})")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"version={expected}\n")
           PY
+
+      # A module already on Central cannot be redeployed, so skip it instead of failing.
+      # This reads repo1 rather than the Portal API: repo1 is the thing consumers resolve
+      # against, and a 200 there means the coordinate is spent for good.
+      #
+      # Note the Portal takes a little while to sync a freshly published artifact to repo1, so
+      # a module published minutes ago may still 404 here. That is safe -- the deploy is simply
+      # attempted and Central rejects it -- but it is why a failed release is worth re-running
+      # after a short wait rather than immediately.
+      - name: Check what is already on Central
+        id: central
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          for artifact in nusadb-jdbc nusadb-hibernate5 nusadb-hibernate6; do
+            url="https://repo1.maven.org/maven2/com/nusadb/$artifact/$VERSION/$artifact-$VERSION.pom"
+            code=$(curl -sSL -o /dev/null -w '%{http_code}' "$url")
+            case "$code" in
+              200) state=published ;;
+              404) state=absent ;;
+              *)   echo "::error::unexpected HTTP $code from $url"; exit 1 ;;
+            esac
+            echo "$artifact $VERSION -> $state"
+            # Hyphens are operators in GitHub expression syntax, so the output key cannot
+            # carry the artifact id verbatim.
+            echo "${artifact//-/_}=$state" >> "$GITHUB_OUTPUT"
+          done
 
       # -DskipTests: the only test class (DriverTest) boots a real `nusadb-server` binary,
       # which is not present in this repository, so it cannot gate the release.
       - name: Deploy the JDBC driver
+        if: steps.central.outputs.nusadb_jdbc == 'absent'
         env:
           MAVEN_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
           MAVEN_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
@@ -93,6 +144,7 @@ jobs:
         run: mvn -B -ntp -Prelease -DskipTests deploy
 
       - name: Deploy the Hibernate 5 dialect
+        if: steps.central.outputs.nusadb_hibernate5 == 'absent'
         env:
           MAVEN_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
           MAVEN_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
@@ -100,14 +152,18 @@ jobs:
         run: mvn -B -ntp -Prelease -DskipTests -f hibernate5/pom.xml deploy
 
       - name: Deploy the Hibernate 6 dialect
+        if: steps.central.outputs.nusadb_hibernate6 == 'absent'
         env:
           MAVEN_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
           MAVEN_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
           MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: mvn -B -ntp -Prelease -DskipTests -f hibernate6/pom.xml deploy
 
+  # Only a tag names a release, so a manual dispatch finishing a partial publish does not
+  # try to cut one.
   github-release:
     needs: publish
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       contents: write
