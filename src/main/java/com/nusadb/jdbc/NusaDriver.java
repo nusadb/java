@@ -32,8 +32,8 @@ public final class NusaDriver implements Driver {
             return null;
         }
         String rest = url.substring(PREFIX.length());
-        String user = info.getProperty("user", "nusa-root");
-        String password = info.getProperty("password", "nusa-root");
+        String user = info.getProperty("user", "nusadb-root");
+        String password = info.getProperty("password", "nusadb-root");
 
         int at = rest.indexOf('@');
         if (at >= 0) {
@@ -79,9 +79,9 @@ public final class NusaDriver implements Driver {
 
     @Override
     public DriverPropertyInfo[] getPropertyInfo(String url, Properties info) {
-        DriverPropertyInfo user = new DriverPropertyInfo("user", info.getProperty("user", "nusa-root"));
+        DriverPropertyInfo user = new DriverPropertyInfo("user", info.getProperty("user", "nusadb-root"));
         user.description = "The database user.";
-        DriverPropertyInfo password = new DriverPropertyInfo("password", info.getProperty("password", "nusa-root"));
+        DriverPropertyInfo password = new DriverPropertyInfo("password", info.getProperty("password", "nusadb-root"));
         password.description = "The user's password (for a SCRAM-authenticated server).";
         return new DriverPropertyInfo[] {user, password};
     }

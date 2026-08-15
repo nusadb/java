@@ -12,7 +12,7 @@ dependencies — SCRAM-SHA-256 uses the JDK's `javax.crypto`. Requires Java 17+.
 import java.sql.*;
 
 // The driver registers itself; explicit Class.forName is optional on modern JVMs.
-String url = "jdbc:nusadb://nusa-root@127.0.0.1:5678/nusadb";
+String url = "jdbc:nusadb://nusadb-root@127.0.0.1:5678/nusadb";
 try (Connection conn = DriverManager.getConnection(url)) {
     try (Statement st = conn.createStatement()) {
         st.execute("CREATE TABLE t (id INT NOT NULL, name TEXT)");
