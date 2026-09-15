@@ -43,6 +43,7 @@ public final class DriverTest {
             run("savepoint rollback and release", () -> savepoints(trust));
             run("listen/notify self-delivery", () -> listenNotify(trust));
             run("query surface round trip", () -> querySurface(trust));
+            run("array binding (createArrayOf / setArray)", () -> arrayBinding(trust));
         } finally {
             trust.stop();
         }
@@ -564,6 +565,27 @@ public final class DriverTest {
             try (Statement st = c.createStatement();
                     ResultSet rs = st.executeQuery("SELECT count(*) FROM copy_t")) {
                 expect(rs.next(), "connection usable after a refused COPY");
+            }
+        }
+    }
+
+    private static void arrayBinding(Server s) throws SQLException {
+        try (Connection c = DriverManager.getConnection(url(s, "u", null))) {
+            try (Statement st = c.createStatement()) {
+                st.execute("CREATE TABLE pb (t TEXT[], n INT[])");
+            }
+            try (PreparedStatement ps = c.prepareStatement("INSERT INTO pb VALUES ($1, $2)")) {
+                // Standard JDBC array binding: createArrayOf + setArray.
+                ps.setArray(1, c.createArrayOf("text", new Object[] {"a", "b,c", "{x}"}));
+                // A Java array via setObject takes the same array-literal path.
+                ps.setObject(2, new int[] {10, 20, 30});
+                ps.executeUpdate();
+            }
+            try (Statement st = c.createStatement();
+                    ResultSet rs = st.executeQuery("SELECT t::text, n::text FROM pb")) {
+                expect(rs.next(), "row present");
+                expect("{a,\"b,c\",\"{x}\"}".equals(rs.getString(1)), "text array literal");
+                expect("{10,20,30}".equals(rs.getString(2)), "int array literal");
             }
         }
     }

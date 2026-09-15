@@ -133,6 +133,12 @@ final class NusaPreparedStatement extends AbstractPreparedStatement {
     }
 
     @Override
+    public void setArray(int parameterIndex, java.sql.Array x) throws SQLException {
+        // Bind a java.sql.Array (from Connection.createArrayOf) as the SQL array literal {a,b}.
+        set(parameterIndex, x == null ? null : bytes(arrayLiteral(x)));
+    }
+
+    @Override
     public void setObject(int parameterIndex, Object x) throws SQLException {
         if (x == null) {
             set(parameterIndex, null);
@@ -140,9 +146,80 @@ final class NusaPreparedStatement extends AbstractPreparedStatement {
             setBytes(parameterIndex, (byte[]) x);
         } else if (x instanceof Boolean) {
             setBoolean(parameterIndex, (Boolean) x);
+        } else if (x instanceof java.sql.Array) {
+            setArray(parameterIndex, (java.sql.Array) x);
+        } else if (x instanceof java.util.Collection || x.getClass().isArray()) {
+            // A Java array or Collection binds as a SQL array literal, matching JDBC's array path.
+            set(parameterIndex, bytes(arrayLiteral(x)));
         } else {
             set(parameterIndex, bytes(x.toString()));
         }
+    }
+
+    /** Render a java.sql.Array / Java array / Collection as a SQL array literal {@code {a,b}}. */
+    static String arrayLiteral(Object value) throws SQLException {
+        StringBuilder sb = new StringBuilder("{");
+        boolean first = true;
+        for (Object el : toElements(value)) {
+            if (!first) {
+                sb.append(',');
+            }
+            first = false;
+            sb.append(arrayElement(el));
+        }
+        sb.append('}');
+        return sb.toString();
+    }
+
+    private static java.util.List<Object> toElements(Object value) throws SQLException {
+        Object v = value instanceof java.sql.Array ? ((java.sql.Array) value).getArray() : value;
+        java.util.List<Object> out = new ArrayList<>();
+        if (v instanceof java.util.Collection) {
+            out.addAll((java.util.Collection<?>) v);
+        } else if (v != null && v.getClass().isArray()) {
+            int n = java.lang.reflect.Array.getLength(v);
+            for (int i = 0; i < n; i++) {
+                out.add(java.lang.reflect.Array.get(v, i));
+            }
+        } else {
+            out.add(v);
+        }
+        return out;
+    }
+
+    private static String arrayElement(Object el) throws SQLException {
+        if (el == null) {
+            return "NULL";
+        }
+        if (el instanceof byte[]) {
+            return quoteArrayToken(hexLiteral((byte[]) el));
+        }
+        if (el instanceof java.sql.Array || el instanceof java.util.Collection
+                || el.getClass().isArray()) {
+            return arrayLiteral(el);
+        }
+        if (el instanceof Boolean) {
+            return ((Boolean) el) ? "true" : "false";
+        }
+        return quoteArrayToken(el.toString());
+    }
+
+    private static String quoteArrayToken(String s) {
+        boolean need = s.isEmpty() || s.equalsIgnoreCase("NULL");
+        if (!need) {
+            for (int i = 0; i < s.length(); i++) {
+                char c = s.charAt(i);
+                if (c == '{' || c == '}' || c == ',' || c == '"' || c == '\\'
+                        || Character.isWhitespace(c)) {
+                    need = true;
+                    break;
+                }
+            }
+        }
+        if (!need) {
+            return s;
+        }
+        return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
     }
 
     @Override
