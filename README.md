@@ -138,10 +138,14 @@ decodes a BYTEA column's `\x<hex>` back to the raw bytes.
 `JSON`, `ARRAY`, and other types come back as `String`. The typed getters (`getInt`,
 `getBigDecimal`, `getTimestamp`, …) parse any column on demand regardless.
 
-Scrollable/updatable result sets, LOBs, and TLS are not yet implemented and throw
+TLS is supported: add `?tls=true` to the URL (implicit TLS 1.2+). Trust a private/self-signed
+server with `?tls=true&tlsca=/path/to/ca.pem`; `tlsdomain=` overrides the verified host name and
+`tlsinsecure=true` skips verification (dev/test only). These may also be passed as JDBC `Properties`.
+
+Scrollable/updatable result sets and LOBs are not yet implemented and throw
 `SQLFeatureNotSupportedException` where called. The supported core (Statement,
 PreparedStatement, ResultSet getters, transactions, `DatabaseMetaData`, generated keys,
-`BYTEA`, SCRAM auth) is fully functional.
+`BYTEA`, arrays via `createArrayOf`/`setArray`, TLS, SCRAM auth) is fully functional.
 
 ## Notifications (LISTEN/NOTIFY)
 

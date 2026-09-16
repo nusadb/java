@@ -36,9 +36,33 @@ final class Wire {
 
     static Wire connect(String host, int port, String user, String database, String password)
             throws SQLException {
+        return connect(host, port, user, database, password, false, null, false, null);
+    }
+
+    static Wire connect(String host, int port, String user, String database, String password,
+            boolean tls, String tlsCa, boolean tlsInsecure, String tlsDomain) throws SQLException {
+        Socket socket = null;
         try {
-            Socket socket = new Socket(host, port);
+            socket = new Socket(host, port);
             socket.setTcpNoDelay(true);
+            if (tls) {
+                // Implicit TLS 1.2+: the server (started with --tls-cert) expects the handshake before
+                // any wire frame. Trust the server via `tlsCa` (a PEM CA/self-signed cert), or the JDK
+                // trust store when absent; `tlsInsecure` skips verification (dev/test only).
+                String peer = tlsDomain != null ? tlsDomain : host;
+                javax.net.ssl.SSLContext ctx = buildSslContext(tlsCa, tlsInsecure);
+                javax.net.ssl.SSLSocket ssl = (javax.net.ssl.SSLSocket) ctx.getSocketFactory()
+                        .createSocket(socket, peer, port, true);
+                ssl.setUseClientMode(true);
+                javax.net.ssl.SSLParameters p = ssl.getSSLParameters();
+                if (!tlsInsecure) {
+                    p.setEndpointIdentificationAlgorithm("HTTPS");
+                }
+                p.setServerNames(java.util.List.of(new javax.net.ssl.SNIHostName(peer)));
+                ssl.setSSLParameters(p);
+                ssl.startHandshake();
+                socket = ssl;
+            }
             Wire wire = new Wire(socket);
             wire.database = database;
             wire.handshake(user, database, password);
@@ -46,8 +70,55 @@ final class Wire {
         } catch (SQLException e) {
             throw e;
         } catch (Exception e) {
+            if (socket != null) {
+                try {
+                    socket.close();
+                } catch (IOException ignored) {
+                    // best-effort close
+                }
+            }
             throw new SQLException("nusadb: connect failed: " + e.getMessage(), "08001", e);
         }
+    }
+
+    // Build an SSL context that trusts the given PEM CA (or the JDK default trust store when null),
+    // or accepts any certificate when insecure (dev/test only).
+    private static javax.net.ssl.SSLContext buildSslContext(String caPath, boolean insecure)
+            throws Exception {
+        javax.net.ssl.SSLContext ctx = javax.net.ssl.SSLContext.getInstance("TLS");
+        if (insecure) {
+            javax.net.ssl.TrustManager[] all = {
+                new javax.net.ssl.X509TrustManager() {
+                    public void checkClientTrusted(java.security.cert.X509Certificate[] c, String a) {}
+
+                    public void checkServerTrusted(java.security.cert.X509Certificate[] c, String a) {}
+
+                    public java.security.cert.X509Certificate[] getAcceptedIssuers() {
+                        return new java.security.cert.X509Certificate[0];
+                    }
+                }
+            };
+            ctx.init(null, all, new java.security.SecureRandom());
+            return ctx;
+        }
+        if (caPath == null) {
+            ctx.init(null, null, null); // JDK default trust store
+            return ctx;
+        }
+        java.security.KeyStore ks = java.security.KeyStore.getInstance(java.security.KeyStore.getDefaultType());
+        ks.load(null, null);
+        java.security.cert.CertificateFactory cf = java.security.cert.CertificateFactory.getInstance("X.509");
+        try (java.io.InputStream is = new java.io.FileInputStream(caPath)) {
+            int i = 0;
+            for (java.security.cert.Certificate cert : cf.generateCertificates(is)) {
+                ks.setCertificateEntry("ca" + (i++), cert);
+            }
+        }
+        javax.net.ssl.TrustManagerFactory tmf = javax.net.ssl.TrustManagerFactory
+                .getInstance(javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm());
+        tmf.init(ks);
+        ctx.init(null, tmf.getTrustManagers(), null);
+        return ctx;
     }
 
     /** A collected result: column names, per-column type names, rows, and the command tag. */

@@ -51,6 +51,24 @@ public final class NusaDriver implements Driver {
         String host = "127.0.0.1";
         int port = 5678;
         String database = "nusadb";
+        // A `?key=value&...` query string (after the database) carries TLS options; strip it before
+        // the database name and merge it over the JDBC Properties.
+        java.util.Map<String, String> params = new java.util.HashMap<>();
+        int qmark = rest.indexOf('?');
+        if (qmark >= 0) {
+            for (String pair : rest.substring(qmark + 1).split("&")) {
+                if (pair.isEmpty()) {
+                    continue;
+                }
+                int eq = pair.indexOf('=');
+                if (eq >= 0) {
+                    params.put(pair.substring(0, eq).toLowerCase(), pair.substring(eq + 1));
+                } else {
+                    params.put(pair.toLowerCase(), "true");
+                }
+            }
+            rest = rest.substring(0, qmark);
+        }
         int slash = rest.indexOf('/');
         String authority = slash >= 0 ? rest.substring(0, slash) : rest;
         if (slash >= 0 && slash + 1 < rest.length()) {
@@ -68,8 +86,21 @@ public final class NusaDriver implements Driver {
             host = authority;
         }
 
-        Wire wire = Wire.connect(host, port, user, database, password);
+        boolean tls = flag(params.getOrDefault("tls", info.getProperty("tls")));
+        boolean tlsInsecure = flag(params.getOrDefault("tlsinsecure", info.getProperty("tlsinsecure")));
+        String tlsCa = params.getOrDefault("tlsca", info.getProperty("tlsca"));
+        String tlsDomain = params.getOrDefault("tlsdomain", info.getProperty("tlsdomain"));
+        Wire wire = Wire.connect(host, port, user, database, password, tls, tlsCa, tlsInsecure, tlsDomain);
         return new NusaConnection(wire);
+    }
+
+    /** A URL/property flag is on unless absent, empty, or one of 0/off/false/no. */
+    private static boolean flag(String value) {
+        if (value == null || value.isEmpty()) {
+            return false;
+        }
+        String v = value.toLowerCase();
+        return !(v.equals("0") || v.equals("off") || v.equals("false") || v.equals("no"));
     }
 
     @Override
