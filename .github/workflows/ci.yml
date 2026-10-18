@@ -119,5 +119,10 @@ jobs:
             if grep -q '\${' "$pom"; then
               echo "::error::$pom has an unresolved property"; bad=1
             fi
+            # Maven-only inheritance switches (child.*.inherit.append.path) make Central's
+            # validator reject the bundle ("does NOT have a .pom file").
+            if grep -q 'child\.' "$pom"; then
+              echo "::error::$pom carries child.* inheritance attributes"; bad=1
+            fi
           done
           exit $bad

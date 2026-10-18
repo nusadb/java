@@ -17,6 +17,12 @@
   <description>Bill of materials: one import pins every NusaDB Java artifact to the same version</description>
   <url>https://github.com/nusadb/java</url>
 
+  <scm>
+    <connection>scm:git:https://github.com/nusadb/java.git</connection>
+    <developerConnection>scm:git:ssh://git@github.com/nusadb/java.git</developerConnection>
+    <url>https://github.com/nusadb/java</url>
+  </scm>
+
   <!-- Usage:
          <dependencyManagement><dependencies><dependency>
            <groupId>com.nusadb</groupId><artifactId>nusadb-bom</artifactId>

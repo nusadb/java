@@ -17,6 +17,12 @@
   <description>A Hibernate ORM 6.x dialect for NusaDB, built on the nusadb-jdbc driver</description>
   <url>https://github.com/nusadb/java</url>
 
+  <scm>
+    <connection>scm:git:https://github.com/nusadb/java.git</connection>
+    <developerConnection>scm:git:ssh://git@github.com/nusadb/java.git</developerConnection>
+    <url>https://github.com/nusadb/java</url>
+  </scm>
+
   <properties>
     <hibernate.version>6.4.4.Final</hibernate.version>
   </properties>

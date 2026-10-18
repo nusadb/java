@@ -17,6 +17,12 @@
   <description>A pure-Java JDBC driver for NusaDB (Nusa Wire Protocol)</description>
   <url>https://github.com/nusadb/java</url>
 
+  <scm>
+    <connection>scm:git:https://github.com/nusadb/java.git</connection>
+    <developerConnection>scm:git:ssh://git@github.com/nusadb/java.git</developerConnection>
+    <url>https://github.com/nusadb/java</url>
+  </scm>
+
   <!-- No runtime dependencies: SCRAM uses the JDK's javax.crypto. -->
   <dependencies>
     <dependency>
