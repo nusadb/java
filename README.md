@@ -12,12 +12,37 @@ dependencies: SCRAM-SHA-256 uses the JDK's `javax.crypto`. Requires Java 17+.
 <dependency>
   <groupId>com.nusadb</groupId>
   <artifactId>nusadb-jdbc</artifactId>
-  <version>0.1.0</version>
+  <version>0.2.0</version>
 </dependency>
 ```
 
-Using several NusaDB artifacts (for example the driver and a Hibernate dialect)? Import
-`com.nusadb:nusadb-bom` (from 0.2.0) to keep them on one version.
+Using several NusaDB artifacts (for example the driver and a Hibernate dialect)? Import the BOM
+once and leave the versions out:
+
+```xml
+<dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>com.nusadb</groupId>
+      <artifactId>nusadb-bom</artifactId>
+      <version>0.2.0</version>
+      <type>pom</type>
+      <scope>import</scope>
+    </dependency>
+  </dependencies>
+</dependencyManagement>
+
+<dependencies>
+  <dependency>
+    <groupId>com.nusadb</groupId>
+    <artifactId>nusadb-jdbc</artifactId>
+  </dependency>
+  <dependency>
+    <groupId>com.nusadb</groupId>
+    <artifactId>nusadb-hibernate6</artifactId>
+  </dependency>
+</dependencies>
+```
 
 ## Usage
 
