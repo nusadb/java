@@ -51,7 +51,33 @@ jdbc:nusadb://[user[:password]@]host[:port]/database
 ```
 
 `user` / `password` may also be passed via the `Properties` argument to
-`DriverManager.getConnection`. Placeholders are positional `$1`, `$2`, ….
+`DriverManager.getConnection`. Placeholders are `?` (JDBC style) or positional `$1`, `$2`, ….
+
+Options go after the database (`?name=value&...`) or into the `Properties`; names are not case
+sensitive.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `connectTimeout` | `10` | Seconds allowed for the TCP connect, TLS handshake and login together. `0` waits forever. `DriverManager.setLoginTimeout` is used when it is set and this is not. |
+| `socketTimeout` | `0` | Seconds to wait for any reply. When it runs out the connection is closed (the late reply would leave the stream out of step). Same as `Connection.setNetworkTimeout`. |
+| `rewriteBatchedInserts` | `false` | Send a batch of a single-row `INSERT ... VALUES (...)` as multi-row INSERTs. See [Batch updates](#batch-updates). |
+| `tls`, `tlsCa`, `tlsDomain`, `tlsInsecure` | off | See [TLS](#tls). |
+
+### DataSource
+
+Pools and containers configured with a data source class rather than a URL can use
+`com.nusadb.jdbc.NusaDataSource`. It has bean properties for `serverName`, `portNumber`,
+`databaseName`, `user`, `password`, every option above, and `url` as an alternative to the first three.
+It opens a new physical connection per call; pooling is left to the pool.
+
+```java
+HikariConfig cfg = new HikariConfig();
+cfg.setDataSourceClassName("com.nusadb.jdbc.NusaDataSource");
+cfg.addDataSourceProperty("serverName", "db.internal");
+cfg.addDataSourceProperty("databaseName", "app");
+cfg.addDataSourceProperty("user", "app");
+cfg.addDataSourceProperty("password", secret);
+```
 
 ### Authentication
 
@@ -62,8 +88,15 @@ driver runs SCRAM-SHA-256 and verifies the server signature (mutual auth).
 
 `Statement.addBatch(String)` / `PreparedStatement.addBatch()` + `executeBatch()` are supported for
 bulk DML (and `DatabaseMetaData.supportsBatchUpdates()` returns `true`). `executeBatch()` returns
-the per-entry update counts. The wire protocol has no batch pipeline, so a batch is sent as one
-statement per entry (N round-trips), reusing a single prepared statement for the parameterised form.
+the per-entry update counts. The wire protocol has no batch pipeline, so by default a batch is sent
+as one statement per entry (N round-trips), reusing a single prepared statement.
+
+With `rewriteBatchedInserts=true`, a batch of a plain single-row `INSERT ... VALUES (...)` is sent
+as multi-row INSERTs instead, as many rows per statement as the parameter limit allows. Over a
+network that is the difference between seconds and milliseconds for a thousand rows. The
+per-row counts are then unknown, so every entry reports `Statement.SUCCESS_NO_INFO` (ORMs accept
+that). Other statements in a batch (UPDATE, INSERT ... SELECT, anything with `RETURNING`) keep
+running row by row.
 
 ```java
 try (PreparedStatement ps = conn.prepareStatement("INSERT INTO t VALUES ($1, $2)")) {
@@ -108,6 +141,12 @@ before the first statement, and `commit()` / `rollback()` close it with
 commits any open transaction (JDBC semantics); closing the connection while a
 transaction is open rolls it back.
 
+`setTransactionIsolation` applies the level to the transactions the connection starts from then
+on (all four JDBC levels are supported), and `getTransactionIsolation` reports what the server will
+use. Changing the level inside an open transaction is refused with SQLState `25001`, since the
+server only accepts it before a transaction's first statement. `setReadOnly` is accepted as a hint
+but not enforced: the server has no read-only transactions yet.
+
 Inside a transaction, the JDBC savepoint API is supported: `setSavepoint()` /
 `setSavepoint(name)` mark a point, `rollback(savepoint)` undoes to it while keeping the
 transaction open, and `releaseSavepoint(savepoint)` forgets it.
@@ -132,8 +171,11 @@ Primary keys (`getPrimaryKeys`) and indexes (`getIndexInfo`) are likewise answer
 the `information_schema.table_constraints` / `key_column_usage` / `statistics` views, so a
 tool's schema tree shows PK badges and index lists. `getColumns` reports `COLUMN_SIZE` /
 `DECIMAL_DIGITS` from the reflected `character_maximum_length` (`VARCHAR(n)`/`CHAR(n)`) and
-`numeric_precision`/`numeric_scale` (`NUMERIC(p,s)`). Relational metadata NusaDB does not
-model yet (foreign keys, procedures) returns an empty result of the JDBC-specified shape.
+`numeric_precision`/`numeric_scale` (`NUMERIC(p,s)`). Foreign keys (`getImportedKeys`,
+`getExportedKeys`, `getCrossReference`) come from `information_schema.referential_constraints`
+and `key_column_usage`, composite keys included. Procedures, which NusaDB does not model yet,
+return an empty result of the JDBC-specified shape. `getDatabaseProductVersion` is the server's
+own version (`SHOW server_version`).
 
 `getGeneratedKeys` is supported for INSERTs: when a statement is executed with
 `Statement.RETURN_GENERATED_KEYS` (or a column-name list), the driver appends a
@@ -146,19 +188,51 @@ the `\x<hex>` text form (which the server coerces into the `BYTEA` column), and 
 decodes a BYTEA column's `\x<hex>` back to the raw bytes.
 
 `getObject` returns the Java type matching each column's SQL type: `BOOL` → `Boolean`,
-`INT` → `Long`, `FLOAT` → `Double`, `NUMERIC` → `BigDecimal`, `DATE`/`TIME`/`TIMESTAMP` →
-`java.sql.Date`/`Time`/`Timestamp`, `UUID` → `java.util.UUID`, `BYTEA` → `byte[]`; `TEXT`,
-`JSON`, `ARRAY`, and other types come back as `String`. The typed getters (`getInt`,
-`getBigDecimal`, `getTimestamp`, …) parse any column on demand regardless.
+`INT` → `Long`, `FLOAT` → `Double`, `NUMERIC` → `BigDecimal`, `DATE`/`TIME`/`TIMESTAMP`/
+`TIMESTAMPTZ` → `java.sql.Date`/`Time`/`Timestamp`, `UUID` → `java.util.UUID`, `BYTEA` → `byte[]`;
+`TEXT`, `JSON`, `ARRAY`, and other types come back as `String`. The typed getters (`getInt`,
+`getBigDecimal`, `getTimestamp`, …) parse any column on demand regardless; `getInt` and friends
+refuse a value that does not fit rather than wrapping it.
 
-TLS is supported from 0.2.0 (the 0.1.0 artifact has none): add `?tls=true` to the URL (implicit TLS 1.2+). Trust a private/self-signed
-server with `?tls=true&tlsca=/path/to/ca.pem`; `tlsdomain=` overrides the verified host name and
-`tlsinsecure=true` skips verification (dev/test only). These may also be passed as JDBC `Properties`.
+### Dates and times
 
-Scrollable/updatable result sets and LOBs are not yet implemented and throw
-`SQLFeatureNotSupportedException` where called. The supported core (Statement,
-PreparedStatement, ResultSet getters, transactions, `DatabaseMetaData`, generated keys,
-`BYTEA`, arrays via `createArrayOf`/`setArray`, TLS, SCRAM auth) is fully functional.
+`getObject(column, Class)` (JDBC 4.2) reads `LocalDate`, `LocalTime`, `LocalDateTime`,
+`OffsetTime`, `OffsetDateTime`, `ZonedDateTime` and `Instant`, as well as the boxed numbers,
+`BigDecimal`, `BigInteger`, `UUID`, `String` and `byte[]`. A `TIMESTAMPTZ` value keeps its exact
+instant; a plain `TIMESTAMP` read as an offset type is taken as UTC.
+
+`setObject` accepts the same `java.time` types (a `ZonedDateTime` is sent with its offset), plus
+`java.util.Date` and `Calendar`. The `Calendar` overloads of `getTimestamp`/`setTimestamp` (and
+`Date`/`Time`) read and write wall-clock time in the calendar's zone, which is what
+`hibernate.jdbc.time_zone=UTC` relies on. The server's session time zone is UTC.
+
+## TLS
+
+
+TLS is supported from 0.2.0 (the 0.1.0 artifact has none): add `?tls=true` to the URL (implicit
+TLS 1.2+). Trust a private/self-signed server with `?tls=true&tlsCa=/path/to/ca.pem`; `tlsDomain=`
+overrides the verified host name and `tlsInsecure=true` skips verification (dev/test only). These
+may also be passed as JDBC `Properties`.
+
+## Not implemented yet
+
+Scrollable/updatable result sets, LOBs (`Blob`/`Clob`) and `CallableStatement` throw
+`SQLFeatureNotSupportedException` where called.
+
+## Timeouts and cancellation
+
+- `Statement.setQueryTimeout(seconds)` cancels a statement that is still running when the time is
+  up; it fails with `SQLTimeoutException` (SQLState `57014`) and the connection stays usable.
+- `Statement.cancel()` from another thread stops the statement running on that statement object.
+  It is a no-op when nothing is running.
+- `Connection.setNetworkTimeout` / `socketTimeout` bound how long to wait for any reply. When that
+  expires the connection is closed and reports `isClosed() == true`.
+- `Connection.isValid(seconds)` is a round trip that must answer within the timeout.
+- `Connection.abort(executor)` drops the socket at once without waiting on the server, which is what
+  pools need for a stuck connection; the server rolls back whatever was open.
+
+Cancellation uses the protocol's out-of-band cancel request: the driver opens a short-lived second
+connection (over TLS too, when the main one uses it) carrying the connection's cancel key.
 
 ## Notifications (LISTEN/NOTIFY)
 
@@ -200,6 +274,10 @@ The integration tests get their server from `NusaTestServer` (in `test-support/`
 | `NUSADB_TEST_URL=jdbc:nusadb://user:pass@host:port/db` | an already running server. **Every table, view and sequence in that database is dropped first**, so use a scratch database |
 | `NUSADB_SERVER_BIN=/path/to/nusadb-server` | that binary, started on an ephemeral port with a temp data dir |
 | *(neither)* | a [Testcontainers](https://testcontainers.com/) container of `nusadb/nusadb` (needs Docker; override the image with `NUSADB_TEST_IMAGE`) |
+
+The TLS tests (`TlsIT`) need a server started with `--tls-cert/--tls-key` and run only when
+`NUSADB_TEST_TLS_URL` names it, e.g. `jdbc:nusadb://user:pass@localhost:5680/nusadb?tls=true&tlsCa=/path/server.crt`;
+without it they are skipped.
 
 The version of every module is the `revision` property in the root `pom.xml`; published poms
 are flattened, so they do not reference the (unpublished) build parent.

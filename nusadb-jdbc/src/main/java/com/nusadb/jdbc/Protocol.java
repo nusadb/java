@@ -34,6 +34,7 @@ final class Protocol {
     static final byte T_DESCRIBE = 'D';
     static final byte T_EXECUTE = 'E';
     static final byte T_SYNC = 'Y';
+    static final byte T_CLOSE = 'C'; // free a prepared statement or portal: [target:u8][name:Str]
     static final byte T_SASL_INITIAL = 'p';
     static final byte T_SASL_RESPONSE = 'r';
     static final byte T_CANCEL = 'K';
@@ -41,6 +42,10 @@ final class Protocol {
     static final byte T_COPY_DATA = 'd'; // COPY ... FROM STDIN data chunk (§12.1)
     static final byte T_COPY_DONE = 'c'; // end of the client's COPY data stream
     static final byte T_COPY_FAIL = 'f'; // abort the in-progress COPY: [message:Str]
+
+    /** {@code Close} / {@code Describe} targets. */
+    static final byte TARGET_STATEMENT = 'S';
+    static final byte TARGET_PORTAL = 'P';
 
     // Backend type bytes.
     static final byte B_AUTH = 'R';
@@ -292,6 +297,10 @@ final class Protocol {
 
     static byte[] sync() {
         return new Writer().frame(T_SYNC);
+    }
+
+    static byte[] close(byte target, String name) {
+        return new Writer().u8(target).str(name).frame(T_CLOSE);
     }
 
     static byte[] terminate() {

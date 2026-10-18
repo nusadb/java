@@ -5,15 +5,19 @@ import java.nio.charset.StandardCharsets;
 import java.sql.Date;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.SQLType;
 import java.sql.Time;
 import java.sql.Timestamp;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Collections;
 import java.util.List;
 
 /** JDBC {@link java.sql.PreparedStatement} over the extended-query protocol. */
 final class NusaPreparedStatement extends AbstractPreparedStatement {
     private final String name;
+    /** The statement text as prepared ({@code $n} placeholders), kept for batch rewriting. */
+    private final String sql;
     private final List<byte[]> params = new ArrayList<>();
     private final List<List<byte[]>> paramBatch = new ArrayList<>();
     // When true the statement was prepared with a RETURNING clause (RETURN_GENERATED_KEYS), so its
@@ -27,6 +31,7 @@ final class NusaPreparedStatement extends AbstractPreparedStatement {
     NusaPreparedStatement(NusaConnection connection, String sql, boolean captureKeys)
             throws SQLException {
         super(connection);
+        this.sql = sql;
         this.name = connection.wire.prepareStatement(sql);
         this.captureKeys = captureKeys;
     }
@@ -92,7 +97,8 @@ final class NusaPreparedStatement extends AbstractPreparedStatement {
 
     @Override
     public void setBigDecimal(int parameterIndex, BigDecimal x) throws SQLException {
-        set(parameterIndex, x == null ? null : bytes(x.toString()));
+        // toPlainString: BigDecimal.toString switches to exponent form (1E+3) for some scales.
+        set(parameterIndex, x == null ? null : bytes(x.toPlainString()));
     }
 
     @Override
@@ -119,17 +125,41 @@ final class NusaPreparedStatement extends AbstractPreparedStatement {
 
     @Override
     public void setDate(int parameterIndex, Date x) throws SQLException {
-        set(parameterIndex, x == null ? null : bytes(x.toString()));
+        setDate(parameterIndex, x, null);
+    }
+
+    @Override
+    public void setDate(int parameterIndex, Date x, Calendar cal) throws SQLException {
+        set(parameterIndex, x == null ? null : bytes(Temporals.format(x, cal)));
     }
 
     @Override
     public void setTime(int parameterIndex, Time x) throws SQLException {
-        set(parameterIndex, x == null ? null : bytes(x.toString()));
+        setTime(parameterIndex, x, null);
+    }
+
+    @Override
+    public void setTime(int parameterIndex, Time x, Calendar cal) throws SQLException {
+        set(parameterIndex, x == null ? null : bytes(Temporals.format(x, cal)));
     }
 
     @Override
     public void setTimestamp(int parameterIndex, Timestamp x) throws SQLException {
-        set(parameterIndex, x == null ? null : bytes(x.toString()));
+        setTimestamp(parameterIndex, x, null);
+    }
+
+    /**
+     * With a calendar the value is sent with that zone's offset, so a TIMESTAMPTZ column stores the
+     * exact instant and a TIMESTAMP column stores the wall-clock time in that zone.
+     */
+    @Override
+    public void setTimestamp(int parameterIndex, Timestamp x, Calendar cal) throws SQLException {
+        set(parameterIndex, x == null ? null : bytes(Temporals.format(x, cal)));
+    }
+
+    @Override
+    public void setNull(int parameterIndex, int sqlType, String typeName) throws SQLException {
+        set(parameterIndex, null);
     }
 
     @Override
@@ -151,8 +181,15 @@ final class NusaPreparedStatement extends AbstractPreparedStatement {
         } else if (x instanceof java.util.Collection || x.getClass().isArray()) {
             // A Java array or Collection binds as a SQL array literal, matching JDBC's array path.
             set(parameterIndex, bytes(arrayLiteral(x)));
+        } else if (x instanceof BigDecimal) {
+            setBigDecimal(parameterIndex, (BigDecimal) x);
+        } else if (x instanceof Enum<?>) {
+            set(parameterIndex, bytes(((Enum<?>) x).name()));
         } else {
-            set(parameterIndex, bytes(x.toString()));
+            // java.time and legacy date types get the server's text form (a ZonedDateTime's
+            // "[Region/City]" suffix, for one, would not parse); everything else its toString.
+            String temporal = Temporals.parameter(x);
+            set(parameterIndex, bytes(temporal != null ? temporal : x.toString()));
         }
     }
 
@@ -222,9 +259,51 @@ final class NusaPreparedStatement extends AbstractPreparedStatement {
         return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
     }
 
+    // The server infers each parameter's type from where it is used, so the JDBC target type adds
+    // nothing: every overload binds the value's text form.
+
     @Override
     public void setObject(int parameterIndex, Object x, int targetSqlType) throws SQLException {
         setObject(parameterIndex, x);
+    }
+
+    @Override
+    public void setObject(int parameterIndex, Object x, int targetSqlType, int scaleOrLength)
+            throws SQLException {
+        if (x instanceof BigDecimal && (targetSqlType == java.sql.Types.NUMERIC
+                || targetSqlType == java.sql.Types.DECIMAL)) {
+            setBigDecimal(parameterIndex, ((BigDecimal) x).setScale(scaleOrLength, java.math.RoundingMode.HALF_UP));
+            return;
+        }
+        setObject(parameterIndex, x);
+    }
+
+    @Override
+    public void setObject(int parameterIndex, Object x, SQLType targetSqlType) throws SQLException {
+        setObject(parameterIndex, x);
+    }
+
+    @Override
+    public void setObject(int parameterIndex, Object x, SQLType targetSqlType, int scaleOrLength)
+            throws SQLException {
+        Integer vendor = targetSqlType == null ? null : targetSqlType.getVendorTypeNumber();
+        setObject(parameterIndex, x, vendor == null ? java.sql.Types.OTHER : vendor, scaleOrLength);
+    }
+
+    @Override
+    public void close() {
+        if (closed) {
+            return;
+        }
+        super.close();
+        if (!connection.isClosed()) {
+            try {
+                connection.wire.closeStatement(name);
+            } catch (SQLException ignored) {
+                // Best effort: an error here (an aborted transaction, a dropped socket) must not mask
+                // the caller's own; the statement goes away with the session at the latest.
+            }
+        }
     }
 
     private List<byte[]> snapshot() {
@@ -234,7 +313,7 @@ final class NusaPreparedStatement extends AbstractPreparedStatement {
     @Override
     public ResultSet executeQuery() throws SQLException {
         ensureOpen();
-        Wire.Result result = connection.execPrepared(name, snapshot());
+        Wire.Result result = run(() -> connection.execPrepared(name, snapshot()));
         apply(result);
         ResultSet rs = getResultSet();
         return rs != null ? rs : new NusaResultSet(this, new Wire.Result(
@@ -244,7 +323,7 @@ final class NusaPreparedStatement extends AbstractPreparedStatement {
     @Override
     public int executeUpdate() throws SQLException {
         ensureOpen();
-        Wire.Result r = connection.execPrepared(name, snapshot());
+        Wire.Result r = run(() -> connection.execPrepared(name, snapshot()));
         if (captureKeys && !r.columns.isEmpty()) {
             applyGeneratedKeys(r);
             return getUpdateCount();
@@ -256,7 +335,7 @@ final class NusaPreparedStatement extends AbstractPreparedStatement {
     @Override
     public boolean execute() throws SQLException {
         ensureOpen();
-        Wire.Result r = connection.execPrepared(name, snapshot());
+        Wire.Result r = run(() -> connection.execPrepared(name, snapshot()));
         if (captureKeys && !r.columns.isEmpty()) {
             applyGeneratedKeys(r);
             return false; // generated keys are read via getGeneratedKeys(), not getResultSet()
@@ -279,6 +358,12 @@ final class NusaPreparedStatement extends AbstractPreparedStatement {
     @Override
     public int[] executeBatch() throws SQLException {
         ensureOpen();
+        if (connection.rewriteBatchedInserts && !captureKeys && paramBatch.size() > 1) {
+            InsertRewriter rewriter = InsertRewriter.of(sql);
+            if (rewriter != null && sameWidth(rewriter.paramsPerRow())) {
+                return executeRewritten(rewriter);
+            }
+        }
         int[] counts = new int[paramBatch.size()];
         for (int i = 0; i < paramBatch.size(); i++) {
             Wire.Result r = connection.execPrepared(name, paramBatch.get(i));
@@ -291,6 +376,45 @@ final class NusaPreparedStatement extends AbstractPreparedStatement {
             }
         }
         paramBatch.clear();
+        return counts;
+    }
+
+    private boolean sameWidth(int params) {
+        for (List<byte[]> entry : paramBatch) {
+            if (entry.size() != params) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * The batch as multi-row INSERTs, as many rows per statement as the parameter limit allows.
+     * Per-row counts are unknown then, so every entry reports {@link java.sql.Statement#SUCCESS_NO_INFO}.
+     */
+    private int[] executeRewritten(InsertRewriter rewriter) throws SQLException {
+        int total = paramBatch.size();
+        int per = rewriter.rowsPerStatement();
+        for (int start = 0; start < total; start += per) {
+            int rows = Math.min(per, total - start);
+            List<byte[]> flat = new ArrayList<>(rows * rewriter.paramsPerRow());
+            for (int i = start; i < start + rows; i++) {
+                flat.addAll(paramBatch.get(i));
+            }
+            String chunk = connection.wire.prepareStatement(rewriter.sql(rows));
+            try {
+                run(() -> connection.execPrepared(chunk, flat));
+            } finally {
+                try {
+                    connection.wire.closeStatement(chunk);
+                } catch (SQLException ignored) {
+                    // the statement dies with the session at the latest
+                }
+            }
+        }
+        paramBatch.clear();
+        int[] counts = new int[total];
+        java.util.Arrays.fill(counts, java.sql.Statement.SUCCESS_NO_INFO);
         return counts;
     }
 

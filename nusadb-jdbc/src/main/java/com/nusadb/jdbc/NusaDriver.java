@@ -86,12 +86,58 @@ public final class NusaDriver implements Driver {
             host = authority;
         }
 
-        boolean tls = flag(params.getOrDefault("tls", info.getProperty("tls")));
-        boolean tlsInsecure = flag(params.getOrDefault("tlsinsecure", info.getProperty("tlsinsecure")));
-        String tlsCa = params.getOrDefault("tlsca", info.getProperty("tlsca"));
-        String tlsDomain = params.getOrDefault("tlsdomain", info.getProperty("tlsdomain"));
-        Wire wire = Wire.connect(host, port, user, database, password, tls, tlsCa, tlsInsecure, tlsDomain);
-        return new NusaConnection(wire);
+        Wire.Options o = new Wire.Options();
+        o.host = host;
+        o.port = port;
+        o.user = user;
+        o.database = database;
+        o.password = password;
+        o.tls = flag(option(params, info, "tls"));
+        o.tlsInsecure = flag(option(params, info, "tlsInsecure"));
+        o.tlsCa = option(params, info, "tlsCa");
+        o.tlsDomain = option(params, info, "tlsDomain");
+        // connectTimeout bounds TCP connect + TLS + login; DriverManager.setLoginTimeout applies
+        // when it is not given. socketTimeout is the default read timeout (Connection.setNetworkTimeout).
+        int login = DriverManager.getLoginTimeout();
+        o.connectTimeoutMillis = seconds(option(params, info, "connectTimeout"),
+                login > 0 ? login : DEFAULT_CONNECT_TIMEOUT_SECONDS, "connectTimeout");
+        o.socketTimeoutMillis = seconds(option(params, info, "socketTimeout"), 0, "socketTimeout");
+        boolean rewrite = flag(option(params, info, "rewriteBatchedInserts"));
+        Wire wire = Wire.connect(o);
+        return new NusaConnection(wire, rewrite);
+    }
+
+    /** Default connect + login budget, so an unreachable host fails instead of hanging a pool. */
+    static final int DEFAULT_CONNECT_TIMEOUT_SECONDS = 10;
+
+    /** A URL query option (keys are matched case-insensitively) or, failing that, a JDBC property. */
+    private static String option(java.util.Map<String, String> params, Properties info, String key) {
+        String v = params.get(key.toLowerCase());
+        if (v != null) {
+            return v;
+        }
+        for (String name : info.stringPropertyNames()) {
+            if (name.equalsIgnoreCase(key)) {
+                return info.getProperty(name);
+            }
+        }
+        return null;
+    }
+
+    private static int seconds(String value, int fallback, String name) throws SQLException {
+        if (value == null || value.isEmpty()) {
+            return fallback * 1000;
+        }
+        try {
+            int s = Integer.parseInt(value.trim());
+            if (s < 0) {
+                throw new NumberFormatException(value);
+            }
+            return s * 1000;
+        } catch (NumberFormatException e) {
+            throw new SQLException("nusadb: " + name + " must be a non-negative number of seconds: " + value,
+                    "08001", e);
+        }
     }
 
     /** A URL/property flag is on unless absent, empty, or one of 0/off/false/no. */
@@ -112,19 +158,36 @@ public final class NusaDriver implements Driver {
     public DriverPropertyInfo[] getPropertyInfo(String url, Properties info) {
         DriverPropertyInfo user = new DriverPropertyInfo("user", info.getProperty("user", "nusadb-root"));
         user.description = "The database user.";
-        DriverPropertyInfo password = new DriverPropertyInfo("password", info.getProperty("password", "nusadb-root"));
+        DriverPropertyInfo password = new DriverPropertyInfo("password", info.getProperty("password"));
         password.description = "The user's password (for a SCRAM-authenticated server).";
-        return new DriverPropertyInfo[] {user, password};
+        return new DriverPropertyInfo[] {
+            user, password,
+            property(info, "tls", "false", "Connect over TLS 1.2+."),
+            property(info, "tlsCa", null, "PEM file with the CA (or self-signed certificate) to trust."),
+            property(info, "tlsDomain", null, "Host name to verify the server certificate against."),
+            property(info, "tlsInsecure", "false", "Skip certificate verification (development only)."),
+            property(info, "connectTimeout", Integer.toString(DEFAULT_CONNECT_TIMEOUT_SECONDS),
+                    "Seconds allowed for TCP connect, TLS and login (0 = no limit)."),
+            property(info, "socketTimeout", "0", "Seconds to wait for any reply before the connection is closed (0 = forever)."),
+            property(info, "rewriteBatchedInserts", "false",
+                    "Send a batch of single-row INSERTs as multi-row INSERTs (update counts become SUCCESS_NO_INFO)."),
+        };
+    }
+
+    private static DriverPropertyInfo property(Properties info, String name, String fallback, String description) {
+        DriverPropertyInfo p = new DriverPropertyInfo(name, info.getProperty(name, fallback));
+        p.description = description;
+        return p;
     }
 
     @Override
     public int getMajorVersion() {
-        return 1;
+        return Version.MAJOR;
     }
 
     @Override
     public int getMinorVersion() {
-        return 0;
+        return Version.MINOR;
     }
 
     @Override

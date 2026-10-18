@@ -19,6 +19,12 @@ final class Wire {
     private final Socket socket;
     private final DataInputStream in;
     private final OutputStream out;
+    /** How this connection was opened; reused to open the side connection a cancel needs. */
+    private Options options;
+    /** Socket read timeout in milliseconds while waiting for a reply (0 = wait forever). */
+    private volatile int readTimeoutMillis;
+    /** Set once the stream can no longer be trusted (I/O error, read timeout, forced close). */
+    private volatile boolean broken;
     long backendPid;
     long backendSecret;
     boolean hasKey;
@@ -34,50 +40,100 @@ final class Wire {
         this.out = new BufferedOutputStream(socket.getOutputStream());
     }
 
-    static Wire connect(String host, int port, String user, String database, String password)
-            throws SQLException {
-        return connect(host, port, user, database, password, false, null, false, null);
+    /** Everything needed to open a socket to the server (again, for a cancel request). */
+    static final class Options {
+        String host = "127.0.0.1";
+        int port = 5678;
+        String user;
+        String database = "nusadb";
+        String password;
+        boolean tls;
+        String tlsCa;
+        boolean tlsInsecure;
+        String tlsDomain;
+        /** TCP connect + TLS handshake + login budget in milliseconds (0 = no limit). */
+        int connectTimeoutMillis;
+        /** Default read timeout for replies in milliseconds (0 = wait forever). */
+        int socketTimeoutMillis;
     }
 
-    static Wire connect(String host, int port, String user, String database, String password,
-            boolean tls, String tlsCa, boolean tlsInsecure, String tlsDomain) throws SQLException {
+    static Wire connect(String host, int port, String user, String database, String password)
+            throws SQLException {
+        Options o = new Options();
+        o.host = host;
+        o.port = port;
+        o.user = user;
+        o.database = database;
+        o.password = password;
+        return connect(o);
+    }
+
+    static Wire connect(Options o) throws SQLException {
         Socket socket = null;
         try {
-            socket = new Socket(host, port);
+            socket = openSocket(o);
+            // The handshake (and SCRAM) is bounded by the connect timeout too, so a server that
+            // accepts the TCP connection but never answers cannot hang the caller.
+            socket.setSoTimeout(o.connectTimeoutMillis);
+            Wire wire = new Wire(socket);
+            wire.options = o;
+            wire.database = o.database;
+            wire.handshake(o.user, o.database, o.password);
+            wire.readTimeoutMillis = o.socketTimeoutMillis;
+            socket.setSoTimeout(o.socketTimeoutMillis);
+            return wire;
+        } catch (SQLException e) {
+            closeQuietly(socket);
+            throw e;
+        } catch (SocketTimeoutException e) {
+            closeQuietly(socket);
+            throw new java.sql.SQLTimeoutException("nusadb: connect to " + o.host + ":" + o.port
+                    + " timed out after " + o.connectTimeoutMillis + " ms", "08001", e);
+        } catch (Exception e) {
+            closeQuietly(socket);
+            throw new SQLException("nusadb: connect failed: " + e.getMessage(), "08001", e);
+        }
+    }
+
+    /** A connected socket (TLS-wrapped when configured), not yet carrying any wire frame. */
+    private static Socket openSocket(Options o) throws Exception {
+        Socket socket = new Socket();
+        try {
+            socket.connect(new java.net.InetSocketAddress(o.host, o.port), o.connectTimeoutMillis);
             socket.setTcpNoDelay(true);
-            if (tls) {
+            if (o.tls) {
                 // Implicit TLS 1.2+: the server (started with --tls-cert) expects the handshake before
                 // any wire frame. Trust the server via `tlsCa` (a PEM CA/self-signed cert), or the JDK
                 // trust store when absent; `tlsInsecure` skips verification (dev/test only).
-                String peer = tlsDomain != null ? tlsDomain : host;
-                javax.net.ssl.SSLContext ctx = buildSslContext(tlsCa, tlsInsecure);
+                String peer = o.tlsDomain != null ? o.tlsDomain : o.host;
+                javax.net.ssl.SSLContext ctx = buildSslContext(o.tlsCa, o.tlsInsecure);
                 javax.net.ssl.SSLSocket ssl = (javax.net.ssl.SSLSocket) ctx.getSocketFactory()
-                        .createSocket(socket, peer, port, true);
+                        .createSocket(socket, peer, o.port, true);
                 ssl.setUseClientMode(true);
                 javax.net.ssl.SSLParameters p = ssl.getSSLParameters();
-                if (!tlsInsecure) {
+                if (!o.tlsInsecure) {
                     p.setEndpointIdentificationAlgorithm("HTTPS");
                 }
                 p.setServerNames(java.util.List.of(new javax.net.ssl.SNIHostName(peer)));
                 ssl.setSSLParameters(p);
+                ssl.setSoTimeout(o.connectTimeoutMillis);
                 ssl.startHandshake();
-                socket = ssl;
+                return ssl;
             }
-            Wire wire = new Wire(socket);
-            wire.database = database;
-            wire.handshake(user, database, password);
-            return wire;
-        } catch (SQLException e) {
-            throw e;
+            return socket;
         } catch (Exception e) {
-            if (socket != null) {
-                try {
-                    socket.close();
-                } catch (IOException ignored) {
-                    // best-effort close
-                }
+            closeQuietly(socket);
+            throw e;
+        }
+    }
+
+    private static void closeQuietly(Socket socket) {
+        if (socket != null) {
+            try {
+                socket.close();
+            } catch (IOException ignored) {
+                // best-effort close
             }
-            throw new SQLException("nusadb: connect failed: " + e.getMessage(), "08001", e);
         }
     }
 
@@ -264,17 +320,119 @@ final class Wire {
                 }
             }
         } catch (IOException e) {
-            throw new SQLException("nusadb: I/O error: " + e.getMessage(), "08006", e);
+            throw ioError(e);
         }
     }
 
+    /**
+     * An I/O failure (including a read timeout) in the middle of an exchange leaves unread frames
+     * on the stream, so the connection is closed rather than reused out of step.
+     */
+    private SQLException ioError(IOException e) {
+        broken = true;
+        closeQuietly(socket);
+        if (e instanceof SocketTimeoutException) {
+            return new java.sql.SQLTimeoutException("nusadb: no reply from the server within "
+                    + readTimeoutMillis + " ms; the connection is closed", "08006", e);
+        }
+        return new SQLException("nusadb: I/O error: " + e.getMessage(), "08006", e);
+    }
+
+    private void ensureUsable() throws SQLException {
+        if (broken) {
+            throw new SQLException("nusadb: connection is closed after an earlier I/O error", "08003");
+        }
+    }
+
+    boolean isBroken() {
+        return broken;
+    }
+
     synchronized Result simpleQuery(String sql) throws SQLException {
+        ensureUsable();
         try {
             send(Protocol.query(sql));
         } catch (IOException e) {
-            throw new SQLException("nusadb: I/O error: " + e.getMessage(), "08006", e);
+            throw ioError(e);
         }
         return collect();
+    }
+
+    /**
+     * {@code Connection.isValid}: a {@code SELECT 1} round trip that must answer within
+     * {@code timeoutMillis} (0 = the connection's normal read timeout).
+     */
+    synchronized boolean ping(int timeoutMillis) {
+        if (broken) {
+            return false;
+        }
+        try {
+            if (timeoutMillis > 0) {
+                socket.setSoTimeout(timeoutMillis);
+            }
+            send(Protocol.query("SELECT 1"));
+            collect();
+            return true;
+        } catch (IOException e) {
+            ioError(e);
+            return false;
+        } catch (SQLException e) {
+            return !broken;
+        } finally {
+            restoreReadTimeout();
+        }
+    }
+
+    /** {@code Connection.setNetworkTimeout}: how long to wait for any reply before giving up. */
+    void setReadTimeout(int millis) throws SQLException {
+        readTimeoutMillis = millis;
+        try {
+            socket.setSoTimeout(millis);
+        } catch (IOException e) {
+            throw ioError(e);
+        }
+    }
+
+    int readTimeout() {
+        return readTimeoutMillis;
+    }
+
+    private void restoreReadTimeout() {
+        try {
+            socket.setSoTimeout(readTimeoutMillis);
+        } catch (IOException ignored) {
+            // the socket is gone; the next exchange reports it
+        }
+    }
+
+    /**
+     * Ask the server to cancel whatever statement this connection is running (§13): open a fresh
+     * connection, send {@code CancelRequest} with this connection's key, and hang up. Not
+     * synchronized: it is called from another thread while the statement holds the lock. A
+     * request that arrives when nothing is running cancels nothing.
+     */
+    void cancel() throws SQLException {
+        if (!hasKey || options == null) {
+            throw new java.sql.SQLFeatureNotSupportedException("nusadb: the server sent no cancel key");
+        }
+        Options o = options;
+        try (Socket side = openSocket(o)) {
+            side.setSoTimeout(o.connectTimeoutMillis > 0 ? o.connectTimeoutMillis : 10_000);
+            Protocol.write(new BufferedOutputStream(side.getOutputStream()), Protocol.cancel(backendPid, backendSecret));
+            // The server closes the side connection without a reply; wait for that so the request
+            // is known to have been read before the caller moves on.
+            side.getInputStream().read();
+        } catch (SocketTimeoutException e) {
+            // The request was written; the server simply has not hung up yet.
+        } catch (Exception e) {
+            throw new SQLException("nusadb: cancel request failed: " + e.getMessage(), "08006", e);
+        }
+    }
+
+    /** {@code Connection.abort}: drop the socket at once, without the polite Terminate. */
+    void forceClose() {
+        broken = true;
+        closeQuietly(socket);
     }
 
     private static NusaNotification decodeNotification(Protocol.Reader r) {
@@ -296,6 +454,7 @@ final class Wire {
      * blocks). Returns a buffered notification immediately if one is pending.
      */
     synchronized NusaNotification pollNotification(int timeoutMillis) throws SQLException {
+        ensureUsable();
         if (!notifications.isEmpty()) {
             return notifications.pollFirst();
         }
@@ -312,19 +471,17 @@ final class Wire {
                     "nusadb: unexpected message '" + (char) msg.type + "' while polling for notifications",
                     "08006");
         } catch (SocketTimeoutException e) {
+            // Waiting for a notification that has not come is not a failure of the stream.
             return null;
         } catch (IOException e) {
-            throw new SQLException("nusadb: I/O error: " + e.getMessage(), "08006", e);
+            throw ioError(e);
         } finally {
-            try {
-                socket.setSoTimeout(0);
-            } catch (IOException ignored) {
-                // best effort: restore blocking reads
-            }
+            restoreReadTimeout();
         }
     }
 
     synchronized Result extendedQuery(String sql, List<byte[]> params) throws SQLException {
+        ensureUsable();
         try {
             send(Protocol.parse("", sql));
             send(Protocol.bind("", "", params));
@@ -332,34 +489,51 @@ final class Wire {
             send(Protocol.execute("", 0));
             send(Protocol.sync());
         } catch (IOException e) {
-            throw new SQLException("nusadb: I/O error: " + e.getMessage(), "08006", e);
+            throw ioError(e);
         }
         return collect();
     }
 
     synchronized String prepareStatement(String sql) throws SQLException {
+        ensureUsable();
         String name = "nusa_stmt_" + (++counter);
         try {
             send(Protocol.parse(name, sql));
             send(Protocol.sync());
         } catch (IOException e) {
-            throw new SQLException("nusadb: I/O error: " + e.getMessage(), "08006", e);
+            throw ioError(e);
         }
         collect(); // surfaces a parse error
         return name;
     }
 
     synchronized Result executePrepared(String statement, List<byte[]> params) throws SQLException {
-        String portal = "nusa_portal_" + (++counter);
+        ensureUsable();
+        // The unnamed portal: the next Bind replaces it, so executing a statement many times on a
+        // long-lived (pooled) connection leaves nothing behind on the server.
         try {
-            send(Protocol.bind(portal, statement, params));
-            send(Protocol.describePortal(portal));
-            send(Protocol.execute(portal, 0));
+            send(Protocol.bind("", statement, params));
+            send(Protocol.describePortal(""));
+            send(Protocol.execute("", 0));
             send(Protocol.sync());
         } catch (IOException e) {
-            throw new SQLException("nusadb: I/O error: " + e.getMessage(), "08006", e);
+            throw ioError(e);
         }
         return collect();
+    }
+
+    /** Free a prepared statement on the server ({@code PreparedStatement.close}). */
+    synchronized void closeStatement(String statement) throws SQLException {
+        if (broken) {
+            return; // the server-side session is gone with the socket
+        }
+        try {
+            send(Protocol.close(Protocol.TARGET_STATEMENT, statement));
+            send(Protocol.sync());
+        } catch (IOException e) {
+            throw ioError(e);
+        }
+        collect();
     }
 
     /**
@@ -370,6 +544,7 @@ final class Wire {
      * surfaces as the server's error.
      */
     synchronized long copyIn(String sql, java.io.InputStream source) throws SQLException {
+        ensureUsable();
         try {
             send(Protocol.query(sql));
             awaitCopyStart(Protocol.B_COPY_IN_RESPONSE);
@@ -389,7 +564,7 @@ final class Wire {
             send(Protocol.copyDone());
             return finishCopy();
         } catch (IOException e) {
-            throw new SQLException("nusadb: I/O error: " + e.getMessage(), "08006", e);
+            throw ioError(e);
         }
     }
 
@@ -398,6 +573,7 @@ final class Wire {
      * {@code CopyData} chunk into {@code sink}, and return the exported row count.
      */
     synchronized long copyOut(String sql, OutputStream sink) throws SQLException {
+        ensureUsable();
         try {
             send(Protocol.query(sql));
             awaitCopyStart(Protocol.B_COPY_OUT_RESPONSE);
@@ -421,7 +597,7 @@ final class Wire {
             }
             return finishCopy();
         } catch (IOException e) {
-            throw new SQLException("nusadb: I/O error: " + e.getMessage(), "08006", e);
+            throw ioError(e);
         }
     }
 
@@ -487,6 +663,10 @@ final class Wire {
     }
 
     void close() {
+        if (broken) {
+            closeQuietly(socket);
+            return;
+        }
         try {
             send(Protocol.terminate());
         } catch (IOException ignored) {

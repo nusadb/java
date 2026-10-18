@@ -31,5 +31,27 @@
       <version>${project.version}</version>
       <scope>test</scope>
     </dependency>
+    <!-- Pool behaviour (validation, abort, network timeout) is tested against the pool most
+         applications use. -->
+    <dependency>
+      <groupId>com.zaxxer</groupId>
+      <artifactId>HikariCP</artifactId>
+      <version>7.1.0</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
+
+  <build>
+    <resources>
+      <resource>
+        <directory>src/main/resources</directory>
+      </resource>
+      <!-- driver.properties carries ${project.version}, so the driver reports the version it was
+           released as. Kept apart so nothing else is ever filtered by accident. -->
+      <resource>
+        <directory>src/main/resources-filtered</directory>
+        <filtering>true</filtering>
+      </resource>
+    </resources>
+  </build>
 </project>

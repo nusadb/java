@@ -5,9 +5,19 @@ import java.nio.charset.StandardCharsets;
 import java.sql.Date;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Statement;
 import java.sql.Time;
 import java.sql.Timestamp;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.OffsetTime;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.util.Calendar;
 import java.util.List;
 import java.util.UUID;
 
@@ -22,10 +32,15 @@ final class NusaResultSet extends AbstractResultSet {
     private boolean closed;
 
     NusaResultSet(NusaStatement statement, Wire.Result result) {
+        this(statement, result, 0);
+    }
+
+    /** {@code maxRows > 0} caps the rows visible through this result set ({@code Statement.setMaxRows}). */
+    NusaResultSet(NusaStatement statement, Wire.Result result, int maxRows) {
         this.statement = statement;
         this.columns = result.columns;
         this.columnTypes = result.columnTypes;
-        this.rows = result.rows;
+        this.rows = maxRows > 0 && result.rows.size() > maxRows ? result.rows.subList(0, maxRows) : result.rows;
     }
 
     private void ensureOpen() throws SQLException {
@@ -112,17 +127,27 @@ final class NusaResultSet extends AbstractResultSet {
 
     @Override
     public byte getByte(int columnIndex) throws SQLException {
-        return (byte) getLong(columnIndex);
+        return (byte) ranged(columnIndex, Byte.MIN_VALUE, Byte.MAX_VALUE, "byte");
     }
 
     @Override
     public short getShort(int columnIndex) throws SQLException {
-        return (short) getLong(columnIndex);
+        return (short) ranged(columnIndex, Short.MIN_VALUE, Short.MAX_VALUE, "short");
     }
 
     @Override
     public int getInt(int columnIndex) throws SQLException {
-        return (int) getLong(columnIndex);
+        return (int) ranged(columnIndex, Integer.MIN_VALUE, Integer.MAX_VALUE, "int");
+    }
+
+    /** getLong, refusing a value the narrower Java type cannot hold instead of wrapping it. */
+    private long ranged(int columnIndex, long min, long max, String type) throws SQLException {
+        long v = getLong(columnIndex);
+        if (v < min || v > max) {
+            throw new SQLException("nusadb: column " + columnIndex + " value " + v + " does not fit in " + type,
+                    "22003");
+        }
+        return v;
     }
 
     @Override
@@ -134,7 +159,13 @@ final class NusaResultSet extends AbstractResultSet {
         try {
             return Long.parseLong(s.trim());
         } catch (NumberFormatException e) {
-            throw new SQLException("nusadb: cannot read column " + columnIndex + " as long: " + s, "22018", e);
+            // A NUMERIC column prints its scale ("1000.0000"); that is still a whole number. A value
+            // with a real fraction, or out of range, is an error rather than silently truncated.
+            try {
+                return new BigDecimal(s.trim()).longValueExact();
+            } catch (NumberFormatException | ArithmeticException e2) {
+                throw new SQLException("nusadb: cannot read column " + columnIndex + " as long: " + s, "22018", e);
+            }
         }
     }
 
@@ -208,44 +239,61 @@ final class NusaResultSet extends AbstractResultSet {
 
     @Override
     public Date getDate(int columnIndex) throws SQLException {
+        return getDate(columnIndex, null);
+    }
+
+    @Override
+    public Date getDate(int columnIndex, Calendar cal) throws SQLException {
         String s = text(columnIndex);
         if (s == null) {
             return null;
         }
         try {
-            return Date.valueOf(s.trim());
-        } catch (IllegalArgumentException e) {
-            throw new SQLException("nusadb: cannot read column " + columnIndex + " as date: " + s, "22007", e);
+            // A TIMESTAMP column read as a date keeps only its date part.
+            String d = s.trim();
+            return Temporals.date(d.length() > 10 ? d.substring(0, 10) : d, cal);
+        } catch (RuntimeException e) {
+            throw Temporals.unreadable(columnIndex, "date", s, e);
         }
     }
 
     @Override
     public Time getTime(int columnIndex) throws SQLException {
+        return getTime(columnIndex, null);
+    }
+
+    @Override
+    public Time getTime(int columnIndex, Calendar cal) throws SQLException {
         String s = text(columnIndex);
         if (s == null) {
             return null;
         }
         try {
-            // A TIMETZ renders with its zone offset ("13:45:30+07"); java.sql.Time is zone-less,
-            // so keep the local (as-displayed) time and drop the offset. Fractional seconds are
-            // likewise beyond Time's "HH:MM:SS" grammar and are truncated.
-            String t = s.trim().replaceFirst("(\\.\\d+)?([+-]\\d{2}(:\\d{2}(:\\d{2})?)?)?$", "");
-            return Time.valueOf(t);
-        } catch (IllegalArgumentException e) {
-            throw new SQLException("nusadb: cannot read column " + columnIndex + " as time: " + s, "22007", e);
+            // A TIMETZ maps to the instant its offset names; a plain TIME is wall-clock time in
+            // cal's zone (the JVM default without one). java.sql.Time keeps milliseconds only.
+            return Temporals.time(s, cal);
+        } catch (RuntimeException e) {
+            throw Temporals.unreadable(columnIndex, "time", s, e);
         }
     }
 
     @Override
     public Timestamp getTimestamp(int columnIndex) throws SQLException {
+        return getTimestamp(columnIndex, null);
+    }
+
+    @Override
+    public Timestamp getTimestamp(int columnIndex, Calendar cal) throws SQLException {
         String s = text(columnIndex);
         if (s == null) {
             return null;
         }
         try {
-            return Timestamp.valueOf(s.trim());
-        } catch (IllegalArgumentException e) {
-            throw new SQLException("nusadb: cannot read column " + columnIndex + " as timestamp: " + s, "22007", e);
+            // A TIMESTAMPTZ maps to the instant its offset names; a plain TIMESTAMP is wall-clock
+            // time in cal's zone (the JVM default without one).
+            return Temporals.timestamp(s, cal);
+        } catch (RuntimeException e) {
+            throw Temporals.unreadable(columnIndex, "timestamp", s, e);
         }
     }
 
@@ -297,6 +345,104 @@ final class NusaResultSet extends AbstractResultSet {
                 // TEXT / JSON / INTERVAL / ARRAY / VECTOR / unknown have no distinct Java type here.
                 return s;
         }
+    }
+
+    @Override
+    public <T> T getObject(int columnIndex, Class<T> type) throws SQLException {
+        if (type == null) {
+            throw new SQLException("nusadb: getObject type must not be null", "HY009");
+        }
+        Object v = convert(columnIndex, type);
+        return lastWasNull ? null : type.cast(v);
+    }
+
+    /** JDBC 4.2 {@code getObject(int, Class)}: the column read as {@code type}. */
+    private Object convert(int columnIndex, Class<?> type) throws SQLException {
+        if (type == String.class) {
+            return getString(columnIndex);
+        }
+        if (type == Object.class) {
+            return getObject(columnIndex);
+        }
+        if (type == byte[].class) {
+            return getBytes(columnIndex);
+        }
+        String s = text(columnIndex); // sets wasNull() for every branch below
+        if (s == null) {
+            return null;
+        }
+        try {
+            if (type == Long.class) {
+                return getLong(columnIndex);
+            }
+            if (type == Integer.class) {
+                return getInt(columnIndex);
+            }
+            if (type == Short.class) {
+                return getShort(columnIndex);
+            }
+            if (type == Byte.class) {
+                return getByte(columnIndex);
+            }
+            if (type == Boolean.class) {
+                return getBoolean(columnIndex);
+            }
+            if (type == Double.class) {
+                return getDouble(columnIndex);
+            }
+            if (type == Float.class) {
+                return getFloat(columnIndex);
+            }
+            if (type == BigDecimal.class) {
+                return getBigDecimal(columnIndex);
+            }
+            if (type == java.math.BigInteger.class) {
+                return getBigDecimal(columnIndex).toBigIntegerExact();
+            }
+            if (type == UUID.class) {
+                return UUID.fromString(s.trim());
+            }
+            if (type == Date.class) {
+                return getDate(columnIndex);
+            }
+            if (type == Time.class) {
+                return getTime(columnIndex);
+            }
+            if (type == Timestamp.class) {
+                return getTimestamp(columnIndex);
+            }
+            if (type == LocalDate.class) {
+                String d = s.trim();
+                return Temporals.localDate(d.length() > 10 ? d.substring(0, 10) : d);
+            }
+            if (type == LocalTime.class) {
+                return Temporals.localTime(s);
+            }
+            if (type == OffsetTime.class) {
+                return Temporals.offsetTime(s);
+            }
+            if (type == LocalDateTime.class) {
+                return Temporals.localDateTime(s);
+            }
+            if (type == OffsetDateTime.class) {
+                // A plain TIMESTAMP has no offset of its own; read it as UTC.
+                return Temporals.offsetDateTime(s, ZoneOffset.UTC);
+            }
+            if (type == ZonedDateTime.class) {
+                return Temporals.offsetDateTime(s, ZoneOffset.UTC).toZonedDateTime();
+            }
+            if (type == Instant.class) {
+                return Temporals.offsetDateTime(s, ZoneOffset.UTC).toInstant();
+            }
+            if (type == java.util.Date.class) {
+                return getTimestamp(columnIndex);
+            }
+        } catch (ArithmeticException | IllegalArgumentException | java.time.DateTimeException e) {
+            throw new SQLException("nusadb: cannot read column " + columnIndex + " as "
+                    + type.getSimpleName() + ": " + s, "22018", e);
+        }
+        throw new SQLFeatureNotSupportedException(
+                "nusadb: getObject cannot convert to " + type.getName());
     }
 
     // --- by-label getters delegate to findColumn ---
@@ -369,5 +515,25 @@ final class NusaResultSet extends AbstractResultSet {
     @Override
     public Object getObject(String columnLabel) throws SQLException {
         return getObject(findColumn(columnLabel));
+    }
+
+    @Override
+    public <T> T getObject(String columnLabel, Class<T> type) throws SQLException {
+        return getObject(findColumn(columnLabel), type);
+    }
+
+    @Override
+    public Date getDate(String columnLabel, Calendar cal) throws SQLException {
+        return getDate(findColumn(columnLabel), cal);
+    }
+
+    @Override
+    public Time getTime(String columnLabel, Calendar cal) throws SQLException {
+        return getTime(findColumn(columnLabel), cal);
+    }
+
+    @Override
+    public Timestamp getTimestamp(String columnLabel, Calendar cal) throws SQLException {
+        return getTimestamp(findColumn(columnLabel), cal);
     }
 }

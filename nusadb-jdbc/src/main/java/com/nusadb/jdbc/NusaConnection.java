@@ -29,13 +29,22 @@ import java.util.concurrent.Executor;
  */
 final class NusaConnection implements Connection, NusaListener {
     final Wire wire;
-    private boolean closed;
+    /** Rewrite a batched single-row INSERT into multi-row INSERTs ({@code rewriteBatchedInserts}). */
+    final boolean rewriteBatchedInserts;
+    private volatile boolean closed;
     private boolean autoCommit = true;
     private boolean inTransaction;
     private int savepointSeq;
+    /** The isolation last set through {@link #setTransactionIsolation}, or null when never set. */
+    private Integer isolation;
 
     NusaConnection(Wire wire) {
+        this(wire, false);
+    }
+
+    NusaConnection(Wire wire, boolean rewriteBatchedInserts) {
         this.wire = wire;
+        this.rewriteBatchedInserts = rewriteBatchedInserts;
     }
 
     /**
@@ -66,7 +75,7 @@ final class NusaConnection implements Connection, NusaListener {
     }
 
     private void ensureOpen() throws SQLException {
-        if (closed) {
+        if (isClosed()) {
             throw new SQLException("nusadb: connection is closed", "08003");
         }
     }
@@ -159,7 +168,9 @@ final class NusaConnection implements Connection, NusaListener {
 
     @Override
     public boolean isClosed() {
-        return closed;
+        // A connection whose socket failed (I/O error, network timeout, abort) is closed too: JDBC
+        // pools ask isClosed() to decide whether to hand it out again.
+        return closed || wire.isBroken();
     }
 
     @Override
@@ -206,16 +217,16 @@ final class NusaConnection implements Connection, NusaListener {
     }
 
     @Override
-    public boolean isValid(int timeout) {
-        if (closed) {
+    public boolean isValid(int timeout) throws SQLException {
+        if (timeout < 0) {
+            throw new SQLException("nusadb: isValid timeout must be >= 0", "22023");
+        }
+        if (isClosed()) {
             return false;
         }
-        try {
-            wire.simpleQuery("SELECT 1");
-            return true;
-        } catch (SQLException e) {
-            return false;
-        }
+        // A server that does not answer within the timeout costs the connection: the reply would
+        // still arrive later and leave the stream out of step.
+        return wire.ping(timeout * 1000);
     }
 
     @Override
@@ -231,7 +242,8 @@ final class NusaConnection implements Connection, NusaListener {
 
     @Override
     public void setReadOnly(boolean readOnly) {
-        // accepted but inert
+        // A hint only (JDBC allows that): the server has no read-only transactions yet, so nothing
+        // is enforced and isReadOnly() keeps reporting false.
     }
 
     @Override
@@ -250,14 +262,67 @@ final class NusaConnection implements Connection, NusaListener {
         return wire.database;
     }
 
-    @Override
-    public void setTransactionIsolation(int level) {
-        // inert
+    /** The SQL spelling of a JDBC isolation level. */
+    private static String isolationSql(int level) throws SQLException {
+        switch (level) {
+            case Connection.TRANSACTION_READ_UNCOMMITTED:
+                return "READ UNCOMMITTED";
+            case Connection.TRANSACTION_READ_COMMITTED:
+                return "READ COMMITTED";
+            case Connection.TRANSACTION_REPEATABLE_READ:
+                return "REPEATABLE READ";
+            case Connection.TRANSACTION_SERIALIZABLE:
+                return "SERIALIZABLE";
+            default:
+                throw new SQLException("nusadb: unsupported transaction isolation level: " + level, "HY024");
+        }
     }
 
+    /**
+     * Sets the isolation for the transactions this connection starts from now on. The server only
+     * accepts a level before a transaction's first statement, so changing it mid-transaction is an
+     * error rather than something that would silently apply later.
+     */
     @Override
-    public int getTransactionIsolation() {
-        return Connection.TRANSACTION_READ_COMMITTED;
+    public void setTransactionIsolation(int level) throws SQLException {
+        ensureOpen();
+        String sql = isolationSql(level);
+        if (inTransaction) {
+            throw new SQLException(
+                    "nusadb: cannot change the isolation level inside an open transaction", "25001");
+        }
+        wire.simpleQuery("SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL " + sql);
+        isolation = level;
+    }
+
+    /** The isolation the server reports for this session (the level the next transaction gets). */
+    @Override
+    public int getTransactionIsolation() throws SQLException {
+        ensureOpen();
+        String level;
+        try {
+            Wire.Result r = wire.simpleQuery("SHOW transaction_isolation");
+            byte[] cell = r.rows.isEmpty() || r.rows.get(0).isEmpty() ? null : r.rows.get(0).get(0);
+            level = cell == null ? "" : new String(cell, java.nio.charset.StandardCharsets.UTF_8);
+        } catch (SQLException e) {
+            // In an aborted transaction every statement fails until ROLLBACK; answer from what we set.
+            if (isolation != null && "25P02".equals(e.getSQLState())) {
+                return isolation;
+            }
+            throw e;
+        }
+        switch (level.trim().toLowerCase(java.util.Locale.ROOT)) {
+            case "read uncommitted":
+                return Connection.TRANSACTION_READ_UNCOMMITTED;
+            case "read committed":
+                return Connection.TRANSACTION_READ_COMMITTED;
+            case "repeatable read":
+                return Connection.TRANSACTION_REPEATABLE_READ;
+            case "serializable":
+                return Connection.TRANSACTION_SERIALIZABLE;
+            default:
+                throw new SQLException("nusadb: server reported an unknown isolation level: " + level, "XX000");
+        }
     }
 
     @Override
@@ -520,19 +585,40 @@ final class NusaConnection implements Connection, NusaListener {
         throw unsupported();
     }
 
+    /**
+     * Pools abort a connection that is stuck, so this must not wait on the server: the socket is
+     * dropped at once (a statement blocked on it fails with an I/O error) and the server rolls back
+     * whatever transaction was open when it sees the connection go.
+     */
     @Override
-    public void abort(Executor executor) {
-        close();
+    public void abort(Executor executor) throws SQLException {
+        if (executor == null) {
+            throw new SQLException("nusadb: abort needs an executor", "HY009");
+        }
+        if (closed) {
+            return;
+        }
+        closed = true;
+        executor.execute(wire::forceClose);
     }
 
+    /**
+     * How long to wait for any reply before giving up. When it expires the connection is closed,
+     * since the late reply would leave the stream out of step; {@code 0} waits forever.
+     */
     @Override
     public void setNetworkTimeout(Executor executor, int milliseconds) throws SQLException {
-        throw unsupported();
+        ensureOpen();
+        if (milliseconds < 0) {
+            throw new SQLException("nusadb: network timeout must be >= 0", "22023");
+        }
+        wire.setReadTimeout(milliseconds);
     }
 
     @Override
-    public int getNetworkTimeout() {
-        return 0;
+    public int getNetworkTimeout() throws SQLException {
+        ensureOpen();
+        return wire.readTimeout();
     }
 
     @Override

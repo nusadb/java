@@ -146,19 +146,30 @@ final class NusaDatabaseMetaData implements DatabaseMetaData {
         return "NusaDB";
     }
 
-    @Override
-    public String getDatabaseProductVersion() {
-        return "1.0";
+    /** The server's version string, asked once per metadata object. */
+    private String serverVersion;
+
+    private String serverVersion() throws SQLException {
+        if (serverVersion == null) {
+            List<String[]> r = query("SHOW server_version");
+            serverVersion = r.isEmpty() || r.get(0)[0] == null ? "0.0.0" : r.get(0)[0].trim();
+        }
+        return serverVersion;
     }
 
     @Override
-    public int getDatabaseMajorVersion() {
-        return 1;
+    public String getDatabaseProductVersion() throws SQLException {
+        return serverVersion();
     }
 
     @Override
-    public int getDatabaseMinorVersion() {
-        return 0;
+    public int getDatabaseMajorVersion() throws SQLException {
+        return Version.parse(serverVersion())[0];
+    }
+
+    @Override
+    public int getDatabaseMinorVersion() throws SQLException {
+        return Version.parse(serverVersion())[1];
     }
 
     @Override
@@ -168,17 +179,17 @@ final class NusaDatabaseMetaData implements DatabaseMetaData {
 
     @Override
     public String getDriverVersion() {
-        return "0.1.0";
+        return Version.FULL;
     }
 
     @Override
     public int getDriverMajorVersion() {
-        return 0;
+        return Version.MAJOR;
     }
 
     @Override
     public int getDriverMinorVersion() {
-        return 1;
+        return Version.MINOR;
     }
 
     @Override
@@ -458,26 +469,102 @@ final class NusaDatabaseMetaData implements DatabaseMetaData {
 
     @Override
     public ResultSet getImportedKeys(String catalog, String schema, String table) throws SQLException {
-        return foreignKeys();
+        // Ordered by the referenced table, then KEY_SEQ (JDBC).
+        return foreignKeys(null, table, "pk");
     }
 
     @Override
     public ResultSet getExportedKeys(String catalog, String schema, String table) throws SQLException {
-        return foreignKeys();
+        // Ordered by the referencing table, then KEY_SEQ (JDBC).
+        return foreignKeys(table, null, "fk");
     }
 
     @Override
     public ResultSet getCrossReference(String pc, String ps, String pt, String fc, String fs,
             String ft) throws SQLException {
-        return foreignKeys();
+        return foreignKeys(pt, ft, "fk");
     }
 
-    private ResultSet foreignKeys() throws SQLException {
-        return empty(new String[] {
-            "PKTABLE_CAT", "PKTABLE_SCHEM", "PKTABLE_NAME", "PKCOLUMN_NAME", "FKTABLE_CAT",
-            "FKTABLE_SCHEM", "FKTABLE_NAME", "FKCOLUMN_NAME", "KEY_SEQ", "UPDATE_RULE",
-            "DELETE_RULE", "FK_NAME", "PK_NAME", "DEFERRABILITY",
-        });
+    private static final String[] FK_COLUMNS = {
+        "PKTABLE_CAT", "PKTABLE_SCHEM", "PKTABLE_NAME", "PKCOLUMN_NAME", "FKTABLE_CAT",
+        "FKTABLE_SCHEM", "FKTABLE_NAME", "FKCOLUMN_NAME", "KEY_SEQ", "UPDATE_RULE",
+        "DELETE_RULE", "FK_NAME", "PK_NAME", "DEFERRABILITY",
+    };
+
+    private static String rule(String r) {
+        if (r == null) {
+            return Integer.toString(importedKeyNoAction);
+        }
+        switch (r.trim().toUpperCase(java.util.Locale.ROOT)) {
+            case "CASCADE":
+                return Integer.toString(importedKeyCascade);
+            case "SET NULL":
+                return Integer.toString(importedKeySetNull);
+            case "SET DEFAULT":
+                return Integer.toString(importedKeySetDefault);
+            case "RESTRICT":
+                return Integer.toString(importedKeyRestrict);
+            default:
+                return Integer.toString(importedKeyNoAction);
+        }
+    }
+
+    /**
+     * Foreign keys, built from {@code referential_constraints} (which names the referenced
+     * PRIMARY KEY / UNIQUE constraint) and {@code key_column_usage} (the columns of both). The n-th
+     * referencing column pairs with the n-th column of the referenced constraint.
+     *
+     * @param pkTable only keys pointing at this table (null: any)
+     * @param fkTable only keys declared on this table (null: any)
+     * @param orderBy {@code "pk"} sorts by the referenced table, {@code "fk"} by the referencing one
+     */
+    private ResultSet foreignKeys(String pkTable, String fkTable, String orderBy) throws SQLException {
+        // constraint (schema + name) -> its columns in ordinal order, plus the owning table
+        java.util.Map<String, List<String[]>> keyColumns = new java.util.HashMap<>();
+        for (String[] r : query("SELECT constraint_schema, constraint_name, table_catalog, table_schema, "
+                + "table_name, column_name, ordinal_position FROM information_schema.key_column_usage "
+                + "ORDER BY constraint_schema, constraint_name, ordinal_position")) {
+            keyColumns.computeIfAbsent(r[0] + "\u0000" + r[1], k -> new ArrayList<>()).add(r);
+        }
+        List<String[]> out = new ArrayList<>();
+        List<String[]> constraints;
+        try {
+            constraints = query("SELECT constraint_schema, constraint_name, unique_constraint_schema, "
+                    + "unique_constraint_name, update_rule, delete_rule FROM information_schema.referential_constraints");
+        } catch (SQLException e) {
+            if (!"42P01".equals(e.getSQLState())) {
+                throw e;
+            }
+            // An older server without the view: report no foreign keys, as the driver always did.
+            return rows(FK_COLUMNS, out);
+        }
+        for (String[] rc : constraints) {
+            List<String[]> fkCols = keyColumns.get(rc[0] + "\u0000" + rc[1]);
+            List<String[]> pkCols = keyColumns.get(rc[2] + "\u0000" + rc[3]);
+            if (fkCols == null || pkCols == null) {
+                continue;
+            }
+            String fkTab = fkCols.get(0)[4];
+            String pkTab = pkCols.get(0)[4];
+            if ((fkTable != null && !fkTable.equals(fkTab)) || (pkTable != null && !pkTable.equals(pkTab))) {
+                continue;
+            }
+            for (int i = 0; i < fkCols.size() && i < pkCols.size(); i++) {
+                String[] f = fkCols.get(i);
+                String[] k = pkCols.get(i);
+                out.add(new String[] {
+                    k[2], k[3], k[4], k[5], f[2], f[3], f[4], f[5], Integer.toString(i + 1),
+                    rule(rc[4]), rule(rc[5]), rc[1], rc[3], Integer.toString(importedKeyNotDeferrable),
+                });
+            }
+        }
+        int table = "pk".equals(orderBy) ? 2 : 6;
+        out.sort(java.util.Comparator
+                .comparing((String[] r) -> r[table - 1] == null ? "" : r[table - 1])
+                .thenComparing(r -> r[table] == null ? "" : r[table])
+                .thenComparing(r -> r[11])
+                .thenComparingInt(r -> Integer.parseInt(r[8])));
+        return rows(FK_COLUMNS, out);
     }
 
     @Override
@@ -671,14 +758,29 @@ final class NusaDatabaseMetaData implements DatabaseMetaData {
         return true;
     }
 
+    /** The isolation a new session starts with (the server's configured default). */
     @Override
-    public int getDefaultTransactionIsolation() {
-        return Connection.TRANSACTION_READ_COMMITTED;
+    public int getDefaultTransactionIsolation() throws SQLException {
+        List<String[]> r = query("SHOW default_transaction_isolation");
+        String level = r.isEmpty() || r.get(0)[0] == null ? "" : r.get(0)[0].trim().toLowerCase(java.util.Locale.ROOT);
+        switch (level) {
+            case "read uncommitted":
+                return Connection.TRANSACTION_READ_UNCOMMITTED;
+            case "repeatable read":
+                return Connection.TRANSACTION_REPEATABLE_READ;
+            case "serializable":
+                return Connection.TRANSACTION_SERIALIZABLE;
+            default:
+                return Connection.TRANSACTION_READ_COMMITTED;
+        }
     }
 
     @Override
     public boolean supportsTransactionIsolationLevel(int level) {
-        return level == Connection.TRANSACTION_READ_COMMITTED;
+        return level == Connection.TRANSACTION_READ_UNCOMMITTED
+                || level == Connection.TRANSACTION_READ_COMMITTED
+                || level == Connection.TRANSACTION_REPEATABLE_READ
+                || level == Connection.TRANSACTION_SERIALIZABLE;
     }
 
     @Override

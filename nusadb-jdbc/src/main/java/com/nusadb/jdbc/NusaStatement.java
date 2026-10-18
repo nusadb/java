@@ -4,12 +4,17 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
+import java.sql.SQLTimeoutException;
 import java.sql.SQLWarning;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** JDBC {@link Statement} over the simple-query protocol. */
 class NusaStatement implements Statement {
@@ -19,7 +24,64 @@ class NusaStatement implements Statement {
     private int updateCount = -1;
     private int fetchSize;
     private ResultSet generatedKeys;
+    private int queryTimeoutSeconds;
+    private int maxRows;
+    /** True while a statement of this object is on the wire, so cancel() knows there is work to stop. */
+    private volatile boolean executing;
     boolean closed;
+
+    /** One daemon thread fires every query timeout of the JVM; it only ever sends cancel requests. */
+    private static final ScheduledThreadPoolExecutor TIMEOUTS = new ScheduledThreadPoolExecutor(1, r -> {
+        Thread t = new Thread(r, "nusadb-query-timeout");
+        t.setDaemon(true);
+        return t;
+    });
+
+    static {
+        TIMEOUTS.setRemoveOnCancelPolicy(true);
+    }
+
+    /** One round trip to the server. */
+    interface WireCall {
+        Wire.Result call() throws SQLException;
+    }
+
+    /**
+     * Run {@code call}, cancelling it server-side if it is still running after the query timeout.
+     * A statement stopped that way surfaces as {@link SQLTimeoutException}; the connection stays
+     * usable, exactly as after any other statement error.
+     */
+    Wire.Result run(WireCall call) throws SQLException {
+        int timeout = queryTimeoutSeconds;
+        AtomicBoolean fired = new AtomicBoolean();
+        ScheduledFuture<?> timer = null;
+        if (timeout > 0) {
+            Wire wire = connection.wire;
+            timer = TIMEOUTS.schedule(() -> {
+                fired.set(true);
+                try {
+                    wire.cancel();
+                } catch (SQLException ignored) {
+                    // the statement simply runs on; there is no caller to report to here
+                }
+            }, timeout, TimeUnit.SECONDS);
+        }
+        executing = true;
+        try {
+            return call.call();
+        } catch (SQLException e) {
+            if (fired.get() && "57014".equals(e.getSQLState())) {
+                throw new SQLTimeoutException(
+                        "nusadb: statement cancelled after the " + timeout + " s query timeout", "57014", e);
+            }
+            throw e;
+        } finally {
+            executing = false;
+            if (timer != null) {
+                timer.cancel(false);
+            }
+        }
+    }
 
     NusaStatement(NusaConnection connection) {
         this.connection = connection;
@@ -53,7 +115,7 @@ class NusaStatement implements Statement {
     void apply(Wire.Result result) {
         generatedKeys = null;
         if (!result.columns.isEmpty()) {
-            current = new NusaResultSet(this, result);
+            current = new NusaResultSet(this, result, maxRows);
             updateCount = -1;
         } else {
             current = null;
@@ -148,7 +210,7 @@ class NusaStatement implements Statement {
         // Run the augmented INSERT, or the original when it is not an INSERT or already carries its
         // own RETURNING. Either way a result with rows is the generated keys; a bare command tag is a
         // plain update with none.
-        Wire.Result result = connection.execSimple(augmented != null ? augmented : sql);
+        Wire.Result result = run(() -> connection.execSimple(augmented != null ? augmented : sql));
         if (!result.columns.isEmpty()) {
             applyGeneratedKeys(result);
             return updateCount;
@@ -160,7 +222,7 @@ class NusaStatement implements Statement {
     @Override
     public ResultSet executeQuery(String sql) throws SQLException {
         ensureOpen();
-        apply(connection.execSimple(sql));
+        apply(run(() -> connection.execSimple(sql)));
         return current != null ? current : new NusaResultSet(this, new Wire.Result(
                 Collections.emptyList(), Collections.emptyList(), Collections.emptyList(), null));
     }
@@ -168,14 +230,14 @@ class NusaStatement implements Statement {
     @Override
     public int executeUpdate(String sql) throws SQLException {
         ensureOpen();
-        apply(connection.execSimple(sql));
+        apply(run(() -> connection.execSimple(sql)));
         return Math.max(updateCount, 0);
     }
 
     @Override
     public boolean execute(String sql) throws SQLException {
         ensureOpen();
-        apply(connection.execSimple(sql));
+        apply(run(() -> connection.execSimple(sql)));
         return current != null;
     }
 
@@ -216,7 +278,8 @@ class NusaStatement implements Statement {
         ensureOpen();
         int[] counts = new int[batch.size()];
         for (int i = 0; i < batch.size(); i++) {
-            Wire.Result r = connection.execSimple(batch.get(i));
+            String sql = batch.get(i);
+            Wire.Result r = run(() -> connection.execSimple(sql));
             counts[i] = Math.max(affected(r.tag), 0);
         }
         batch.clear();
@@ -286,12 +349,16 @@ class NusaStatement implements Statement {
 
     @Override
     public int getMaxRows() {
-        return 0;
+        return maxRows;
     }
 
     @Override
-    public void setMaxRows(int max) {
-        // inert
+    public void setMaxRows(int max) throws SQLException {
+        if (max < 0) {
+            throw new SQLException("nusadb: max rows must be >= 0", "22023");
+        }
+        // Applied client-side: rows past the limit are dropped from the result set.
+        maxRows = max;
     }
 
     @Override
@@ -306,12 +373,15 @@ class NusaStatement implements Statement {
 
     @Override
     public int getQueryTimeout() {
-        return 0;
+        return queryTimeoutSeconds;
     }
 
     @Override
-    public void setQueryTimeout(int seconds) {
-        // inert
+    public void setQueryTimeout(int seconds) throws SQLException {
+        if (seconds < 0) {
+            throw new SQLException("nusadb: query timeout must be >= 0", "22023");
+        }
+        queryTimeoutSeconds = seconds;
     }
 
     @Override
@@ -326,7 +396,11 @@ class NusaStatement implements Statement {
 
     @Override
     public void cancel() throws SQLException {
-        throw unsupported();
+        // Called from another thread while this statement runs. Nothing running, nothing to do:
+        // a cancel request sent now could not be matched to a statement anyway.
+        if (executing) {
+            connection.wire.cancel();
+        }
     }
 
     @Override
