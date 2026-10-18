@@ -2,3 +2,5 @@ build/
 target/
 *.class
 cp.txt
+# written by flatten-maven-plugin on every build
+.flattened-pom.xml

@@ -1,10 +1,6 @@
 package com.nusadb.jdbc;
 
-import java.io.File;
-import java.io.IOException;
-import java.net.ServerSocket;
-import java.net.Socket;
-import java.nio.file.Files;
+import com.nusadb.testing.NusaTestServer;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -13,85 +9,171 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestMethodOrder;
 
 /**
- * Integration tests for the NusaDB JDBC driver against a real server. JUnit-free: a small harness
- * that boots {@code nusadb-server} and asserts. Run after {@code cargo build -p nusadb-server}.
+ * Integration tests for the NusaDB JDBC driver against a real server, provided by
+ * {@link NusaTestServer} (see there for how to choose it). Run with {@code mvn verify -Pit}.
+ *
+ * <p>The tests share one database and run in a fixed order, as they always have: later checks (the
+ * metadata introspection in particular) see the tables earlier ones created.
  */
-public final class DriverTest {
-    private static int passed;
-    private static int failed;
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
+class DriverIT {
+    private static NusaTestServer server;
 
-    public static void main(String[] args) throws Exception {
+    @BeforeAll
+    static void startServer() throws Exception {
         Class.forName("com.nusadb.jdbc.NusaDriver");
-        Server trust = Server.start();
-        try {
-            run("simple query round trip", () -> simpleQuery(trust));
-            run("parameterised query with NULL", () -> parameterised(trust));
-            run("prepared statement reused", () -> prepared(trust));
-            run("batch updates (statement + prepared)", () -> batchUpdates(trust));
-            run("question-mark placeholders", () -> questionMarkPlaceholders(trust));
-            run("positionalize skips literals", DriverTest::positionalizeUnit);
-            run("server error surfaces", () -> serverError(trust));
-            run("database metadata introspection", () -> databaseMetadata(trust));
-            run("generated keys via RETURNING", () -> generatedKeys(trust));
-            run("copy bulk load and export", () -> copyBulk(trust));
-            run("bytea round trip", () -> byteaRoundTrip(trust));
-            run("getObject returns typed values", () -> getObjectTyped(trust));
-            run("transaction commit persists", () -> transactionCommit(trust));
-            run("transaction rollback discards", () -> transactionRollback(trust));
-            run("savepoint rollback and release", () -> savepoints(trust));
-            run("listen/notify self-delivery", () -> listenNotify(trust));
-            run("query surface round trip", () -> querySurface(trust));
-            run("array binding (createArrayOf / setArray)", () -> arrayBinding(trust));
-        } finally {
-            trust.stop();
-        }
-
-        Server auth = Server.start("--auth-user", "alice:secret");
-        try {
-            run("scram correct password", () -> scramOk(auth));
-            run("scram wrong password", () -> scramWrong(auth));
-        } finally {
-            auth.stop();
-        }
-
-        System.out.println("\n" + passed + " passed, " + failed + " failed");
-        if (failed > 0) {
-            System.exit(1);
-        }
+        server = NusaTestServer.get();
     }
 
-    interface Check {
-        void run() throws Exception;
+    @Test
+    @Order(1)
+    @DisplayName("simple query round trip")
+    void simpleQuery() throws Exception {
+        simpleQuery(server);
     }
 
-    private static void run(String name, Check check) {
-        try {
-            check.run();
-            passed++;
-            System.out.println("ok   - " + name);
-        } catch (Throwable t) {
-            failed++;
-            System.out.println("FAIL - " + name + "\n      " + t);
-        }
+    @Test
+    @Order(2)
+    @DisplayName("parameterised query with NULL")
+    void parameterised() throws Exception {
+        parameterised(server);
     }
 
-    private static String url(Server s, String user, String password) {
-        if (password != null) {
-            return "jdbc:nusadb://" + user + ":" + password + "@127.0.0.1:" + s.port + "/nusadb";
-        }
-        return "jdbc:nusadb://" + user + "@127.0.0.1:" + s.port + "/nusadb";
+    @Test
+    @Order(3)
+    @DisplayName("prepared statement reused")
+    void prepared() throws Exception {
+        prepared(server);
     }
 
-    private static void simpleQuery(Server s) throws SQLException {
-        try (Connection c = DriverManager.getConnection(url(s, "u", null))) {
+    @Test
+    @Order(4)
+    @DisplayName("batch updates (statement + prepared)")
+    void batchUpdates() throws Exception {
+        batchUpdates(server);
+    }
+
+    @Test
+    @Order(5)
+    @DisplayName("question-mark placeholders")
+    void questionMarkPlaceholders() throws Exception {
+        questionMarkPlaceholders(server);
+    }
+
+    @Test
+    @Order(6)
+    @DisplayName("server error surfaces")
+    void serverError() throws Exception {
+        serverError(server);
+    }
+
+    @Test
+    @Order(7)
+    @DisplayName("database metadata introspection")
+    void databaseMetadata() throws Exception {
+        databaseMetadata(server);
+    }
+
+    @Test
+    @Order(8)
+    @DisplayName("generated keys via RETURNING")
+    void generatedKeys() throws Exception {
+        generatedKeys(server);
+    }
+
+    @Test
+    @Order(9)
+    @DisplayName("copy bulk load and export")
+    void copyBulk() throws Exception {
+        copyBulk(server);
+    }
+
+    @Test
+    @Order(10)
+    @DisplayName("bytea round trip")
+    void byteaRoundTrip() throws Exception {
+        byteaRoundTrip(server);
+    }
+
+    @Test
+    @Order(11)
+    @DisplayName("getObject returns typed values")
+    void getObjectTyped() throws Exception {
+        getObjectTyped(server);
+    }
+
+    @Test
+    @Order(12)
+    @DisplayName("transaction commit persists")
+    void transactionCommit() throws Exception {
+        transactionCommit(server);
+    }
+
+    @Test
+    @Order(13)
+    @DisplayName("transaction rollback discards")
+    void transactionRollback() throws Exception {
+        transactionRollback(server);
+    }
+
+    @Test
+    @Order(14)
+    @DisplayName("savepoint rollback and release")
+    void savepoints() throws Exception {
+        savepoints(server);
+    }
+
+    @Test
+    @Order(15)
+    @DisplayName("listen/notify self-delivery")
+    void listenNotify() throws Exception {
+        listenNotify(server);
+    }
+
+    @Test
+    @Order(16)
+    @DisplayName("query surface round trip")
+    void querySurface() throws Exception {
+        querySurface(server);
+    }
+
+    @Test
+    @Order(17)
+    @DisplayName("array binding (createArrayOf / setArray)")
+    void arrayBinding() throws Exception {
+        arrayBinding(server);
+    }
+
+    @Test
+    @Order(18)
+    @DisplayName("scram correct password")
+    void scramOk() throws Exception {
+        scramOk(server);
+    }
+
+    @Test
+    @Order(19)
+    @DisplayName("scram wrong password")
+    void scramWrong() throws Exception {
+        scramWrong(server);
+    }
+
+    private static void simpleQuery(NusaTestServer s) throws SQLException {
+        try (Connection c = DriverManager.getConnection(s.url())) {
             try (Statement st = c.createStatement()) {
                 st.execute("CREATE TABLE jdbc_simple (id INT NOT NULL, name TEXT)");
                 int n = st.executeUpdate("INSERT INTO jdbc_simple VALUES (5, 'alice')");
                 expect(n == 1, "insert count == 1");
                 try (ResultSet rs = st.executeQuery("SELECT id, name FROM jdbc_simple")) {
-                    // Protocol 1.1 typed metadata (R42-B.03): ResultSetMetaData reports column types.
+                    // Protocol 1.1 typed metadata: ResultSetMetaData reports column types.
                     java.sql.ResultSetMetaData md = rs.getMetaData();
                     expect("INT".equals(md.getColumnTypeName(1)), "column 1 type name is INT");
                     expect(md.getColumnType(1) == java.sql.Types.BIGINT, "column 1 type is BIGINT");
@@ -105,8 +187,8 @@ public final class DriverTest {
         }
     }
 
-    private static void getObjectTyped(Server s) throws SQLException {
-        try (Connection c = DriverManager.getConnection(url(s, "u", null))) {
+    private static void getObjectTyped(NusaTestServer s) throws SQLException {
+        try (Connection c = DriverManager.getConnection(s.url())) {
             try (Statement st = c.createStatement()) {
                 st.execute("CREATE TABLE jdbc_obj (b BOOL, i INT, f FLOAT, n NUMERIC(10,2), "
                     + "d DATE, ts TIMESTAMP, u UUID)");
@@ -143,8 +225,8 @@ public final class DriverTest {
         }
     }
 
-    private static void parameterised(Server s) throws SQLException {
-        try (Connection c = DriverManager.getConnection(url(s, "u", null))) {
+    private static void parameterised(NusaTestServer s) throws SQLException {
+        try (Connection c = DriverManager.getConnection(s.url())) {
             try (Statement st = c.createStatement()) {
                 st.execute("CREATE TABLE jdbc_params (id INT NOT NULL, name TEXT)");
             }
@@ -167,8 +249,8 @@ public final class DriverTest {
         }
     }
 
-    private static void prepared(Server s) throws SQLException {
-        try (Connection c = DriverManager.getConnection(url(s, "u", null))) {
+    private static void prepared(NusaTestServer s) throws SQLException {
+        try (Connection c = DriverManager.getConnection(s.url())) {
             try (Statement st = c.createStatement()) {
                 st.execute("CREATE TABLE jdbc_prep (id INT NOT NULL)");
             }
@@ -189,8 +271,8 @@ public final class DriverTest {
         }
     }
 
-    private static void batchUpdates(Server s) throws SQLException {
-        try (Connection c = DriverManager.getConnection(url(s, "u", null))) {
+    private static void batchUpdates(NusaTestServer s) throws SQLException {
+        try (Connection c = DriverManager.getConnection(s.url())) {
             try (Statement st = c.createStatement()) {
                 st.execute("CREATE TABLE jdbc_batch (id INT NOT NULL, name TEXT)");
             }
@@ -230,8 +312,8 @@ public final class DriverTest {
         }
     }
 
-    private static void questionMarkPlaceholders(Server s) throws SQLException {
-        try (Connection c = DriverManager.getConnection(url(s, "u", null))) {
+    private static void questionMarkPlaceholders(NusaTestServer s) throws SQLException {
+        try (Connection c = DriverManager.getConnection(s.url())) {
             try (Statement st = c.createStatement()) {
                 st.execute("CREATE TABLE jdbc_qm (id INT NOT NULL, name TEXT)");
             }
@@ -250,22 +332,8 @@ public final class DriverTest {
         }
     }
 
-    private static void positionalizeUnit() {
-        expect("WHERE a = $1 AND b = $2".equals(
-                        NusaConnection.positionalize("WHERE a = ? AND b = ?")),
-                "two markers -> $1,$2");
-        expect("VALUES ($1, '? literal', $2)".equals(
-                        NusaConnection.positionalize("VALUES (?, '? literal', ?)")),
-                "marker inside string literal is preserved");
-        expect("SELECT \"c?\" FROM t WHERE x = $1".equals(
-                        NusaConnection.positionalize("SELECT \"c?\" FROM t WHERE x = ?")),
-                "marker inside quoted identifier is preserved");
-        String already = "INSERT INTO t VALUES ($1, $2)";
-        expect(already.equals(NusaConnection.positionalize(already)), "existing $n SQL is unchanged");
-    }
-
-    private static void databaseMetadata(Server s) throws SQLException {
-        try (Connection c = DriverManager.getConnection(url(s, "u", null))) {
+    private static void databaseMetadata(NusaTestServer s) throws SQLException {
+        try (Connection c = DriverManager.getConnection(s.url())) {
             try (Statement st = c.createStatement()) {
                 st.execute("CREATE TABLE meta_t (id INT NOT NULL, name TEXT, active BOOL)");
             }
@@ -273,7 +341,7 @@ public final class DriverTest {
             expect("NusaDB".equals(md.getDatabaseProductName()), "product name is NusaDB");
             expect("\"".equals(md.getIdentifierQuoteString()), "identifier quote is double-quote");
 
-            // getTables — the table appears with a table type (what a tool's schema tree reads).
+            // getTables: the table appears with a table type (what a tool's schema tree reads).
             boolean foundTable = false;
             try (ResultSet rs = md.getTables(null, null, "meta_t", null)) {
                 while (rs.next()) {
@@ -285,7 +353,7 @@ public final class DriverTest {
             }
             expect(foundTable, "getTables lists meta_t");
 
-            // getColumns — every column with a name, type name, ordinal, and a column size.
+            // getColumns: every column with a name, type name, ordinal, and a column size.
             List<String> cols = new ArrayList<>();
             try (ResultSet rs = md.getColumns(null, null, "meta_t", null)) {
                 while (rs.next()) {
@@ -306,7 +374,7 @@ public final class DriverTest {
                 expect(!rs.next(), "escaped underscore is literal (does not match 'id')");
             }
 
-            // getColumns reflects the declared length/precision (K2): VARCHAR(n) COLUMN_SIZE = n;
+            // getColumns reflects the declared length/precision: VARCHAR(n) COLUMN_SIZE = n;
             // NUMERIC(p,s) COLUMN_SIZE = p and DECIMAL_DIGITS = s.
             try (Statement st = c.createStatement()) {
                 st.execute("CREATE TABLE meta_sizes (vc VARCHAR(10), amount NUMERIC(8, 2))");
@@ -329,7 +397,7 @@ public final class DriverTest {
             expect(sawVc && sawNum, "getColumns reflects VARCHAR(10) and NUMERIC(8,2)");
 
             // getColumns reports COLUMN_DEF (the DEFAULT SQL) and derives IS_AUTOINCREMENT from a
-            // SERIAL column's nextval(...) default (K7).
+            // SERIAL column's nextval(...) default.
             try (Statement st = c.createStatement()) {
                 st.execute("CREATE TABLE meta_def (id SERIAL, status TEXT DEFAULT 'active', n INT)");
             }
@@ -380,7 +448,7 @@ public final class DriverTest {
             try (ResultSet rs = md.getTypeInfo()) {
                 expect(rs.next(), "getTypeInfo returns at least one type");
             }
-            // getPrimaryKeys / getIndexInfo are answered from information_schema (R41-B.03a).
+            // getPrimaryKeys / getIndexInfo are answered from information_schema.
             // A key-less table reports none (empty but correctly shaped) ...
             try (ResultSet rs = md.getPrimaryKeys(null, null, "meta_t")) {
                 expect(!rs.next(), "a key-less table reports no primary keys");
@@ -434,8 +502,8 @@ public final class DriverTest {
         }
     }
 
-    private static void generatedKeys(Server s) throws SQLException {
-        try (Connection c = DriverManager.getConnection(url(s, "u", null))) {
+    private static void generatedKeys(NusaTestServer s) throws SQLException {
+        try (Connection c = DriverManager.getConnection(s.url())) {
             try (Statement st = c.createStatement()) {
                 st.execute("CREATE TABLE gk (id INT NOT NULL, name TEXT)");
             }
@@ -474,7 +542,7 @@ public final class DriverTest {
                     expect(keys.next() && keys.getInt(1) == 4, "prepared generated key id == 4");
                 }
             }
-            // Regression (B-G09.d4): a value containing the word "returning" must not fool the
+            // Regression: a value containing the word "returning" must not fool the
             // already-has-RETURNING guard, so RETURNING is still appended and the key captured.
             try (Statement st = c.createStatement()) {
                 st.executeUpdate("INSERT INTO gk VALUES (5, 'returning x')",
@@ -520,8 +588,8 @@ public final class DriverTest {
         }
     }
 
-    private static void copyBulk(Server s) throws SQLException {
-        try (Connection c = DriverManager.getConnection(url(s, "u", null))) {
+    private static void copyBulk(NusaTestServer s) throws SQLException {
+        try (Connection c = DriverManager.getConnection(s.url())) {
             try (Statement st = c.createStatement()) {
                 st.execute("CREATE TABLE copy_t (id INT NOT NULL, name TEXT, PRIMARY KEY (id))");
             }
@@ -569,8 +637,8 @@ public final class DriverTest {
         }
     }
 
-    private static void arrayBinding(Server s) throws SQLException {
-        try (Connection c = DriverManager.getConnection(url(s, "u", null))) {
+    private static void arrayBinding(NusaTestServer s) throws SQLException {
+        try (Connection c = DriverManager.getConnection(s.url())) {
             try (Statement st = c.createStatement()) {
                 st.execute("CREATE TABLE pb (t TEXT[], n INT[])");
             }
@@ -590,8 +658,8 @@ public final class DriverTest {
         }
     }
 
-    private static void byteaRoundTrip(Server s) throws SQLException {
-        try (Connection c = DriverManager.getConnection(url(s, "u", null))) {
+    private static void byteaRoundTrip(NusaTestServer s) throws SQLException {
+        try (Connection c = DriverManager.getConnection(s.url())) {
             try (Statement st = c.createStatement()) {
                 st.execute("CREATE TABLE bt (id INT NOT NULL, data BYTEA, PRIMARY KEY (id))");
             }
@@ -619,8 +687,8 @@ public final class DriverTest {
         }
     }
 
-    private static void serverError(Server s) throws SQLException {
-        try (Connection c = DriverManager.getConnection(url(s, "u", null))) {
+    private static void serverError(NusaTestServer s) throws SQLException {
+        try (Connection c = DriverManager.getConnection(s.url())) {
             try (Statement st = c.createStatement()) {
                 boolean threw = false;
                 try {
@@ -636,8 +704,8 @@ public final class DriverTest {
         }
     }
 
-    private static void transactionCommit(Server s) throws SQLException {
-        try (Connection c = DriverManager.getConnection(url(s, "u", null))) {
+    private static void transactionCommit(NusaTestServer s) throws SQLException {
+        try (Connection c = DriverManager.getConnection(s.url())) {
             try (Statement st = c.createStatement()) {
                 st.execute("CREATE TABLE jdbc_tx_commit (id INT NOT NULL)");
             }
@@ -657,8 +725,8 @@ public final class DriverTest {
         }
     }
 
-    private static void transactionRollback(Server s) throws SQLException {
-        try (Connection c = DriverManager.getConnection(url(s, "u", null))) {
+    private static void transactionRollback(NusaTestServer s) throws SQLException {
+        try (Connection c = DriverManager.getConnection(s.url())) {
             try (Statement st = c.createStatement()) {
                 st.execute("CREATE TABLE jdbc_tx_rollback (id INT NOT NULL)");
                 st.executeUpdate("INSERT INTO jdbc_tx_rollback VALUES (1)");
@@ -678,8 +746,8 @@ public final class DriverTest {
         }
     }
 
-    private static void savepoints(Server s) throws SQLException {
-        try (Connection c = DriverManager.getConnection(url(s, "u", null))) {
+    private static void savepoints(NusaTestServer s) throws SQLException {
+        try (Connection c = DriverManager.getConnection(s.url())) {
             try (Statement st = c.createStatement()) {
                 st.execute("CREATE TABLE jdbc_sp (id INT NOT NULL)");
             }
@@ -719,8 +787,8 @@ public final class DriverTest {
         }
     }
 
-    private static void listenNotify(Server s) throws SQLException {
-        try (Connection c = DriverManager.getConnection(url(s, "u", null))) {
+    private static void listenNotify(NusaTestServer s) throws SQLException {
+        try (Connection c = DriverManager.getConnection(s.url())) {
             NusaListener l = c.unwrap(NusaListener.class);
             l.listen("jdbc_chan");
             // Self-delivery: NOTIFY on a channel this connection listens to comes back to it.
@@ -746,8 +814,8 @@ public final class DriverTest {
      * grouping / window / CTE / subquery / set ops / every join flavour / LATERAL) end to end via
      * raw {@code Statement.executeQuery}, asserting the row count returned over the wire per query.
      */
-    private static void querySurface(Server s) throws SQLException {
-        try (Connection c = DriverManager.getConnection(url(s, "u", null))) {
+    private static void querySurface(NusaTestServer s) throws SQLException {
+        try (Connection c = DriverManager.getConnection(s.url())) {
             try (Statement st = c.createStatement()) {
                 st.execute("CREATE TABLE surf_a (id INT NOT NULL, grp TEXT, v INT)");
                 st.executeUpdate("INSERT INTO surf_a VALUES (1, 'a', 10)");
@@ -826,17 +894,17 @@ public final class DriverTest {
         expect(got == want, what + " returns " + want + " rows (got " + got + ")");
     }
 
-    private static void scramOk(Server s) throws SQLException {
-        try (Connection c = DriverManager.getConnection(url(s, "alice", "secret"));
+    private static void scramOk(NusaTestServer s) throws SQLException {
+        try (Connection c = DriverManager.getConnection(s.url());
                 Statement st = c.createStatement();
                 ResultSet rs = st.executeQuery("SELECT 1")) {
             expect(rs.next(), "authenticated query returns a row");
         }
     }
 
-    private static void scramWrong(Server s) {
+    private static void scramWrong(NusaTestServer s) {
         boolean threw = false;
-        try (Connection ignored = DriverManager.getConnection(url(s, "alice", "wrong"))) {
+        try (Connection ignored = DriverManager.getConnection(s.url("wrong"))) {
             // should not reach here
         } catch (SQLException e) {
             threw = true;
@@ -847,106 +915,6 @@ public final class DriverTest {
     private static void expect(boolean condition, String what) {
         if (!condition) {
             throw new AssertionError("expectation failed: " + what);
-        }
-    }
-
-    /** A child nusadb-server process on an ephemeral port. */
-    static final class Server {
-        final int port;
-        private final Process process;
-        private final File dir;
-
-        private Server(int port, Process process, File dir) {
-            this.port = port;
-            this.process = process;
-            this.dir = dir;
-        }
-
-        static Server start(String... extra) throws Exception {
-            String bin = binary();
-            int port = freePort();
-            File dir = Files.createTempDirectory("nusadb-jdbc-").toFile();
-            List<String> cmd = new ArrayList<>();
-            cmd.add(bin);
-            cmd.add("--listen");
-            cmd.add("127.0.0.1:" + port);
-            cmd.add("--data-dir");
-            cmd.add(dir.getAbsolutePath());
-            for (String e : extra) {
-                cmd.add(e);
-            }
-            ProcessBuilder pb = new ProcessBuilder(cmd);
-            pb.environment().put("RUST_LOG", "error");
-            pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);
-            pb.redirectError(ProcessBuilder.Redirect.DISCARD);
-            Process process = pb.start();
-            waitReady(port);
-            return new Server(port, process, dir);
-        }
-
-        void stop() {
-            process.destroy();
-            try {
-                process.waitFor();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-            deleteRecursively(dir);
-        }
-
-        private static String binary() {
-            List<String> bases = new ArrayList<>();
-            String env = System.getenv("CARGO_TARGET_DIR");
-            if (env != null) {
-                bases.add(env);
-            }
-            bases.add(repoRoot() + File.separator + "target");
-            boolean windows = System.getProperty("os.name").toLowerCase().contains("win");
-            String name = windows ? "nusadb-server.exe" : "nusadb-server";
-            for (String base : bases) {
-                for (String profile : new String[] {"debug", "release"}) {
-                    File f = new File(base + File.separator + profile + File.separator + name);
-                    if (f.exists()) {
-                        return f.getAbsolutePath();
-                    }
-                }
-            }
-            throw new IllegalStateException(
-                    "nusadb-server binary not found; run `cargo build -p nusadb-server`");
-        }
-
-        private static String repoRoot() {
-            // .../drivers/java -> repo root is two levels up from the working dir.
-            return new File(System.getProperty("user.dir")).getParentFile().getParent();
-        }
-
-        private static int freePort() throws IOException {
-            try (ServerSocket socket = new ServerSocket(0)) {
-                return socket.getLocalPort();
-            }
-        }
-
-        private static void waitReady(int port) throws InterruptedException {
-            long deadline = System.currentTimeMillis() + 15000;
-            while (System.currentTimeMillis() < deadline) {
-                try (Socket s = new Socket("127.0.0.1", port)) {
-                    return;
-                } catch (IOException e) {
-                    Thread.sleep(100);
-                }
-            }
-            throw new IllegalStateException("server on port " + port + " did not become ready");
-        }
-
-        private static void deleteRecursively(File f) {
-            File[] children = f.listFiles();
-            if (children != null) {
-                for (File c : children) {
-                    deleteRecursively(c);
-                }
-            }
-            // best effort
-            f.delete();
         }
     }
 }

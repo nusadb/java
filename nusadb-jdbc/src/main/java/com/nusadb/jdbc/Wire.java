@@ -364,7 +364,7 @@ final class Wire {
 
     /**
      * Bulk-load via {@code COPY ... FROM STDIN} (§12.1): send the COPY statement, stream {@code source}
-     * (already in the server's text format — tab-delimited, {@code \N} for NULL) in 64 KiB
+     * (already in the server's text format: tab-delimited, {@code \N} for NULL) in 64 KiB
      * {@code CopyData} chunks, finish with {@code CopyDone}, and return the loaded row count. A read
      * error on {@code source} sends {@code CopyFail} and leaves the connection ready; a refused COPY
      * surfaces as the server's error.

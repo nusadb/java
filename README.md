@@ -1,10 +1,23 @@
-# nusadb-jdbc — JDBC driver for NusaDB
+# nusadb-jdbc: JDBC driver for NusaDB
 
-A pure-Java JDBC driver that speaks the [Nusa Wire Protocol](../../docs/wire-protocol.md)
+A pure-Java JDBC driver that speaks the [Nusa Wire Protocol](https://github.com/nusadb/nusadb/blob/master/docs/wire-protocol.md)
 (`PROTOCOL_VERSION 1.1`) directly over a socket. No native code, no third-party
-dependencies — SCRAM-SHA-256 uses the JDK's `javax.crypto`. Requires Java 17+.
+dependencies: SCRAM-SHA-256 uses the JDK's `javax.crypto`. Requires Java 17+.
 `ResultSetMetaData.getColumnType` / `getColumnTypeName` report each column's NusaDB type
 (protocol 1.1).
+
+## Installation
+
+```xml
+<dependency>
+  <groupId>com.nusadb</groupId>
+  <artifactId>nusadb-jdbc</artifactId>
+  <version>0.1.0</version>
+</dependency>
+```
+
+Using several NusaDB artifacts (for example the driver and a Hibernate dialect)? Import
+`com.nusadb:nusadb-bom` (from 0.2.0) to keep them on one version.
 
 ## Usage
 
@@ -65,7 +78,7 @@ try (PreparedStatement ps = conn.prepareStatement("INSERT INTO t VALUES ($1, $2)
 
 ### Bulk load / export (`COPY`)
 
-For high-throughput load/export, `NusaCopyManager` drives the `COPY` sub-protocol — one round-trip
+For high-throughput load/export, `NusaCopyManager` drives the `COPY` sub-protocol, with one round-trip
 for the whole dataset. Unwrap it from the connection, then move bytes in the server's text format
 (tab-delimited fields, `\N` for SQL `NULL`, one row per line). You write the `COPY` statement, with
 any `WITH (...)` options.
@@ -83,7 +96,7 @@ long exported = copy.copyOut("COPY t TO STDOUT", out);
 ```
 
 A source read error sends `CopyFail`, and a `COPY` the server refuses (bad SQL, an RLS-protected
-table) throws — either way the connection is left ready for the next statement.
+table) throws. Either way the connection is left ready for the next statement.
 
 ## Transactions
 
@@ -108,12 +121,12 @@ try (Statement st = conn.createStatement()) {
 ```
 
 `DatabaseMetaData` is implemented: the introspection a GUI tool such as DBeaver uses
-to build its schema tree — `getSchemas`, `getTableTypes`, `getTables`, `getColumns`,
-`getTypeInfo` — is answered from the server's `information_schema` views. `getCatalogs`
-lists every database in the cluster via `SELECT name FROM nusadb_databases` — NusaDB's own
-system catalog (not `information_schema`, which the engine scopes to the connected database) —
+to build its schema tree (`getSchemas`, `getTableTypes`, `getTables`, `getColumns`,
+`getTypeInfo`) is answered from the server's `information_schema` views. `getCatalogs`
+lists every database in the cluster via `SELECT name FROM nusadb_databases`, NusaDB's own
+system catalog (not `information_schema`, which the engine scopes to the connected database),
 so the tree shows all databases as siblings.
-Because NusaDB is engine-per-database, a connection can still only query its own catalog —
+Because NusaDB is engine-per-database, a connection can still only query its own catalog;
 browsing another database opens a new connection.
 Primary keys (`getPrimaryKeys`) and indexes (`getIndexInfo`) are likewise answered from
 the `information_schema.table_constraints` / `key_column_usage` / `statistics` views, so a
@@ -124,7 +137,7 @@ model yet (foreign keys, procedures) returns an empty result of the JDBC-specifi
 
 `getGeneratedKeys` is supported for INSERTs: when a statement is executed with
 `Statement.RETURN_GENERATED_KEYS` (or a column-name list), the driver appends a
-`RETURNING` clause and exposes the resulting row(s) through `getGeneratedKeys()` — so
+`RETURNING` clause and exposes the resulting row(s) through `getGeneratedKeys()`, so
 `@GeneratedValue` / auto-increment keys round-trip. (Column-*index* requests return all
 columns, since indexes can't be mapped to names without statement metadata.)
 
@@ -138,7 +151,7 @@ decodes a BYTEA column's `\x<hex>` back to the raw bytes.
 `JSON`, `ARRAY`, and other types come back as `String`. The typed getters (`getInt`,
 `getBigDecimal`, `getTimestamp`, …) parse any column on demand regardless.
 
-TLS is supported: add `?tls=true` to the URL (implicit TLS 1.2+). Trust a private/self-signed
+TLS is supported from 0.2.0 (the 0.1.0 artifact has none): add `?tls=true` to the URL (implicit TLS 1.2+). Trust a private/self-signed
 server with `?tls=true&tlsca=/path/to/ca.pem`; `tlsdomain=` overrides the verified host name and
 `tlsinsecure=true` skips verification (dev/test only). These may also be passed as JDBC `Properties`.
 
@@ -165,20 +178,31 @@ l.unlisten("orders");
 
 ## Build & test
 
-No Maven required to try it:
+The repository is one Maven build (JDK 17+, Maven 3.6.3+):
+
+| Module | Artifact | |
+|---|---|---|
+| `nusadb-jdbc/` | `com.nusadb:nusadb-jdbc` | this driver |
+| `hibernate5/` | `com.nusadb:nusadb-hibernate5` | [Hibernate ORM 5.x dialect](hibernate5/README.md) |
+| `hibernate6/` | `com.nusadb:nusadb-hibernate6` | [Hibernate ORM 6.x dialect](hibernate6/README.md) |
+| `bom/` | `com.nusadb:nusadb-bom` | pins all of the above to one version |
+| `test-support/` | (not published) | internal: provides a live server to the integration tests |
 
 ```bash
-cargo build -p nusadb-server
-cd drivers/java
-javac -d build/classes src/main/java/com/nusadb/jdbc/*.java
-javac -cp build/classes -d build/test-classes src/test/java/com/nusadb/jdbc/DriverTest.java
-java -cp "build/classes:build/test-classes" com.nusadb.jdbc.DriverTest
+mvn verify          # build every module + unit tests (no server needed)
+mvn verify -Pit     # + integration tests (*IT) against a live NusaDB server
 ```
 
-(On Windows use `;` as the classpath separator.) The test boots a real
-`nusadb-server` on an ephemeral port (honouring `CARGO_TARGET_DIR`) and covers
-queries, parameters, prepared statements, errors, the transaction rejection, and
-SCRAM auth. A `pom.xml` is provided for Maven users.
+The integration tests get their server from `NusaTestServer` (in `test-support/`), first match wins:
+
+| Setting | Server used |
+|---|---|
+| `NUSADB_TEST_URL=jdbc:nusadb://user:pass@host:port/db` | an already running server. **Every table, view and sequence in that database is dropped first**, so use a scratch database |
+| `NUSADB_SERVER_BIN=/path/to/nusadb-server` | that binary, started on an ephemeral port with a temp data dir |
+| *(neither)* | a [Testcontainers](https://testcontainers.com/) container of `nusadb/nusadb` (needs Docker; override the image with `NUSADB_TEST_IMAGE`) |
+
+The version of every module is the `revision` property in the root `pom.xml`; published poms
+are flattened, so they do not reference the (unpublished) build parent.
 
 ## License
 

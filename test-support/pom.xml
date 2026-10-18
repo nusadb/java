@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.nusadb</groupId>
+    <artifactId>nusadb-parent</artifactId>
+    <version>${revision}</version>
+  </parent>
+
+  <artifactId>nusadb-test-support</artifactId>
+  <packaging>jar</packaging>
+
+  <name>NusaDB test support (internal)</name>
+  <description>Provides a live NusaDB server to this repository's integration tests. Not published.</description>
+
+  <!-- Deliberately no dependency on nusadb-jdbc: the driver's own tests depend on this module,
+       so it reaches the driver through java.sql.DriverManager on the caller's classpath. -->
+  <dependencies>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers</artifactId>
+      <version>${testcontainers.version}</version>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-deploy-plugin</artifactId>
+        <configuration>
+          <skip>true</skip>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

@@ -1,20 +1,34 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd"
+         child.project.url.inherit.append.path="false">
   <modelVersion>4.0.0</modelVersion>
 
+  <!-- Parent + aggregator for every module in this repository. It is never published: each
+       module's pom is flattened at build time (flatten-maven-plugin), which drops the <parent>
+       reference and inlines what consumers need, so Maven Central only ever sees self-contained
+       poms. Bump the version in one place: the `revision` property below. -->
   <groupId>com.nusadb</groupId>
-  <artifactId>nusadb-jdbc</artifactId>
-  <version>0.1.0</version>
-  <packaging>jar</packaging>
+  <artifactId>nusadb-parent</artifactId>
+  <version>${revision}</version>
+  <packaging>pom</packaging>
 
-  <name>NusaDB JDBC Driver</name>
-  <description>A pure-Java JDBC driver for NusaDB (Nusa Wire Protocol)</description>
+  <name>NusaDB Java (parent)</name>
+  <description>Build parent for the NusaDB JDBC driver and its integrations</description>
   <url>https://github.com/nusadb/java</url>
 
+  <modules>
+    <module>test-support</module>
+    <module>nusadb-jdbc</module>
+    <module>hibernate5</module>
+    <module>hibernate6</module>
+    <module>bom</module>
+  </modules>
+
   <!-- name, description, url, licenses, developers and scm are all mandatory for Maven
-       Central; a deployment missing any of them is rejected at validation. -->
+       Central; a deployment missing any of them is rejected at validation. The flattened
+       module poms carry these over from here. -->
   <licenses>
     <license>
       <name>Apache-2.0</name>
@@ -31,30 +45,132 @@
     </developer>
   </developers>
 
-  <scm>
+  <!-- Every module lives in this one repository: children must inherit these URLs verbatim,
+       not with their artifactId appended (Maven's default). -->
+  <scm child.scm.connection.inherit.append.path="false"
+       child.scm.developerConnection.inherit.append.path="false"
+       child.scm.url.inherit.append.path="false">
     <connection>scm:git:https://github.com/nusadb/java.git</connection>
     <developerConnection>scm:git:ssh://git@github.com/nusadb/java.git</developerConnection>
     <url>https://github.com/nusadb/java</url>
   </scm>
 
   <properties>
+    <!-- The one version for every module. 0.1.0 is already on Central (immutable), so work
+         continues on the next version; a release overrides it with -Drevision=X.Y.Z. -->
+    <revision>0.2.0-SNAPSHOT</revision>
+
     <maven.compiler.release>17</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+    <junit.version>5.13.4</junit.version>
+    <testcontainers.version>2.0.5</testcontainers.version>
+
+    <!-- Integration tests (*IT) need a live server and are opt-in: `mvn verify -Pit`. -->
+    <skipITs>true</skipITs>
   </properties>
 
-  <!-- No runtime dependencies: SCRAM uses the JDK's javax.crypto. -->
+  <!-- No <dependencyManagement> here on purpose: the BOM is flattened from the effective model, so
+       anything managed in this parent would leak into the published BOM. Modules pin test
+       library versions through the properties above instead. -->
 
   <build>
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <version>3.14.0</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <version>3.5.3</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-failsafe-plugin</artifactId>
+          <version>3.5.3</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-jar-plugin</artifactId>
+          <version>3.4.2</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-install-plugin</artifactId>
+          <version>3.1.4</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-deploy-plugin</artifactId>
+          <version>3.1.4</version>
+        </plugin>
+        <plugin>
+          <groupId>org.codehaus.mojo</groupId>
+          <artifactId>flatten-maven-plugin</artifactId>
+          <version>1.7.0</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+
     <plugins>
+      <!-- Integration tests: *IT classes, run in `verify` only when -Pit clears skipITs. -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-compiler-plugin</artifactId>
-        <version>3.11.0</version>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <configuration>
+          <skipITs>${skipITs}</skipITs>
+        </configuration>
+        <executions>
+          <execution>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!-- Every module's installed/deployed pom is the flattened one: no <parent>, ${revision}
+           resolved, and the Central-mandatory metadata inlined. `ossrh` keeps exactly what a
+           consumer and Central need; the BOM overrides this with `bom` to keep its
+           <dependencyManagement>. -->
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>flatten-maven-plugin</artifactId>
+        <configuration>
+          <flattenMode>ossrh</flattenMode>
+          <updatePomFile>true</updatePomFile>
+        </configuration>
+        <executions>
+          <execution>
+            <id>flatten</id>
+            <phase>process-resources</phase>
+            <goals><goal>flatten</goal></goals>
+          </execution>
+          <execution>
+            <id>flatten-clean</id>
+            <phase>clean</phase>
+            <goals><goal>clean</goal></goals>
+          </execution>
+        </executions>
       </plugin>
     </plugins>
   </build>
 
   <profiles>
+    <!-- Run the integration tests. The server they talk to is chosen by test-support
+         (NusaTestServer): NUSADB_TEST_URL, else NUSADB_SERVER_BIN, else a Testcontainers
+         container (needs Docker). -->
+    <profile>
+      <id>it</id>
+      <properties>
+        <skipITs>false</skipITs>
+      </properties>
+    </profile>
+
     <!-- Everything Maven Central additionally requires: a sources jar, a javadoc jar, and a
          GPG signature over every artifact. Kept in a profile so ordinary `mvn package` stays
          fast and does not need a signing key. Release with `mvn -Prelease deploy`. -->
@@ -122,6 +238,12 @@
               <publishingServerId>central</publishingServerId>
               <autoPublish>true</autoPublish>
               <waitUntil>published</waitUntil>
+              <!-- Build-only modules never reach Central: the parent is flattened away and
+                   test-support is internal test infrastructure. -->
+              <excludeArtifacts>
+                <excludeArtifact>nusadb-parent</excludeArtifact>
+                <excludeArtifact>nusadb-test-support</excludeArtifact>
+              </excludeArtifacts>
             </configuration>
           </plugin>
         </plugins>

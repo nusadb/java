@@ -100,7 +100,7 @@ class NusaStatement implements Statement {
     }
 
     /**
-     * True if {@code sql} already carries a RETURNING keyword in executable position — i.e. outside
+     * True if {@code sql} already carries a RETURNING keyword in executable position, i.e. outside
      * string literals, quoted identifiers, and comments, so a value like {@code 'returning x'} does
      * not fool the check. Mirrors the literal/comment skipping in {@link NusaConnection#positionalize}.
      */

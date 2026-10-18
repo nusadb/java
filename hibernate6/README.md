@@ -1,4 +1,4 @@
-# nusadb-hibernate6 — Hibernate ORM 6.x dialect for NusaDB
+# nusadb-hibernate6: Hibernate ORM 6.x dialect for NusaDB
 
 A thin [Hibernate ORM](https://hibernate.org/) 6.x dialect layered on the
 [`nusadb-jdbc`](../README.md) driver. Built and tested against Hibernate **6.4.4.Final**
@@ -20,8 +20,10 @@ The dialect maps JDBC types to the column types NusaDB accepts (`int`, `bigint`,
 
 ### Identifiers
 
-NusaDB has no auto-increment columns or sequences, so entity identifiers must be
-**application-assigned** — declare `@Id` without `@GeneratedValue`:
+The NusaDB server supports identity columns (`SERIAL`, `GENERATED ... AS IDENTITY`) and sequences,
+but this dialect does not enable Hibernate's `IDENTITY` or `SEQUENCE` generation yet. Until it
+does, entity identifiers must be **application-assigned**: declare `@Id` without
+`@GeneratedValue` (entities use the `jakarta.persistence` annotations of Hibernate 6):
 
 ```java
 @Entity
@@ -37,24 +39,21 @@ public class Account {
 
 ### Bootstrap
 
-Disable JDBC metadata access at boot (`hibernate.boot.allow_jdbc_metadata_access=false`)
-so Hibernate configures itself from this dialect rather than `DatabaseMetaData`, which the
-driver does not yet implement.
+Set `hibernate.boot.allow_jdbc_metadata_access=false` so Hibernate
+configures itself from this dialect. The driver implements `DatabaseMetaData`, but booting
+Hibernate from it has not been validated with this dialect yet.
 
 ## Build & test
 
+From the repository root (see the [root README](../README.md#build--test) for how the
+integration tests find a server):
+
 ```bash
-cargo build -p nusadb-server          # the test boots a real server
-cd drivers/java && mvn -q -Dmaven.test.skip=true install   # install nusadb-jdbc locally
-cd hibernate6
-mvn -q test-compile
-mvn -q dependency:build-classpath -Dmdep.includeScope=test -Dmdep.outputFile=cp.txt
-java -cp "target/classes;target/test-classes;$(cat cp.txt)" com.nusadb.hibernate.HibernateTest
+mvn verify -Pit -pl hibernate6 -am
 ```
 
-(On a POSIX shell use `:` as the classpath separator.) `HibernateTest` boots a real
-`nusadb-server` on an ephemeral port and exercises schema export, persist/load, update,
-a query with a row limit, delete, and transaction rollback.
+`HibernateIT` exercises schema export, persist/load, update, a query with a row limit,
+delete, and transaction rollback.
 
 ## License
 

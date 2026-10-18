@@ -10,6 +10,7 @@ permissions:
   contents: read
 
 jobs:
+  # Unit tests only (no server): `mvn verify` leaves the *IT integration tests skipped.
   build:
     runs-on: ubuntu-latest
     strategy:
@@ -25,32 +26,17 @@ jobs:
           java-version: ${{ matrix.java }}
           cache: maven
 
-      # The three modules are independent poms, not an aggregator, and the dialects depend on
-      # com.nusadb:nusadb-jdbc. Install the driver first so the dialects resolve it from the
-      # local repository instead of reaching for a version that is not on Central yet.
-      #
-      # -DskipTests: the only test class (DriverTest) boots a real `nusadb-server` binary,
-      # which is not present in this repository.
-      - name: Build and install the JDBC driver
-        run: mvn -B -ntp -DskipTests install
+      # One reactor build: the parent orders the modules (driver before the dialects that depend
+      # on it), so nothing has to be installed by hand first.
+      - name: Build and unit-test every module
+        run: mvn -B -ntp verify
 
-      - name: Build the Hibernate 5 dialect
-        run: mvn -B -ntp -DskipTests -f hibernate5/pom.xml install
-
-      - name: Build the Hibernate 6 dialect
-        run: mvn -B -ntp -DskipTests -f hibernate6/pom.xml install
-
-      # Compile the test sources even though they cannot be run -- this is what stops the
-      # test harness from silently rotting against driver API changes.
-      - name: Compile the test sources
-        run: mvn -B -ntp test-compile
-
-      - name: Verify the JDBC driver registers itself
+      - name: Verify the packaged driver jar registers itself
         run: |
-          jar="$(find target -maxdepth 1 -name 'nusadb-jdbc-*.jar' ! -name '*-sources.jar' ! -name '*-javadoc.jar' | head -1)"
+          jar="$(find nusadb-jdbc/target -maxdepth 1 -name 'nusadb-jdbc-*.jar' ! -name '*-sources.jar' ! -name '*-javadoc.jar' | head -1)"
           echo "driver jar: $jar"
-          # DriverManager must find NusaDriver via the ServiceLoader / JDBC autoloading, and
-          # it must claim the jdbc:nusadb: URL scheme. Both are pure classpath concerns.
+          # DriverManager must find NusaDriver via the ServiceLoader / JDBC autoloading from the
+          # jar alone, and it must claim the jdbc:nusadb: URL scheme.
           cat > /tmp/CheckDriver.java <<'EOF'
           import java.sql.Driver;
           import java.sql.DriverManager;
@@ -68,7 +54,27 @@ jobs:
           EOF
           java -cp "$jar" /tmp/CheckDriver.java
 
-  # A release signs and uploads from this same pom. Catch a pom that Central would reject
+  # Integration tests against a real server. test-support (NusaTestServer) starts the
+  # nusadb/nusadb image through Testcontainers, using the runner's Docker.
+  integration:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        java: ['17', '21']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: maven
+
+      - name: Integration tests (Testcontainers)
+        run: mvn -B -ntp verify -Pit
+
+  # A release signs and uploads from these same poms. Catch a pom that Central would reject
   # (missing scm/developers/licenses, a javadoc build that dies) here, on every push, rather
   # than discovering it at tag time.
   release-dry-run:
@@ -83,17 +89,14 @@ jobs:
           cache: maven
 
       - name: Build the release artifacts (unsigned)
-        run: |
-          # -Dgpg.skip: no signing key on a PR build; everything else in the release profile
-          # (sources jar, javadoc jar, Central's required metadata) is exercised for real.
-          mvn -B -ntp -Prelease -Dgpg.skip -DskipTests install
-          mvn -B -ntp -Prelease -Dgpg.skip -DskipTests -f hibernate5/pom.xml install
-          mvn -B -ntp -Prelease -Dgpg.skip -DskipTests -f hibernate6/pom.xml install
+        # -Dgpg.skip: no signing key on a PR build; everything else in the release profile
+        # (sources jar, javadoc jar, flattened poms) is exercised for real.
+        run: mvn -B -ntp -Prelease -Dgpg.skip -DskipTests install
 
       - name: Confirm sources and javadoc jars were produced
         run: |
           missing=0
-          for dir in . hibernate5 hibernate6; do
+          for dir in nusadb-jdbc hibernate5 hibernate6; do
             for kind in sources javadoc; do
               if ! ls "$dir"/target/*-"$kind".jar >/dev/null 2>&1; then
                 echo "::error::$dir is missing its -$kind.jar (Maven Central requires it)"
@@ -102,3 +105,19 @@ jobs:
             done
           done
           exit $missing
+
+      - name: Confirm the published poms are self-contained
+        run: |
+          # Consumers (and Central) only ever see the flattened poms: no <parent> (the parent is
+          # never published) and no unresolved ${...} versions.
+          bad=0
+          for dir in nusadb-jdbc hibernate5 hibernate6 bom; do
+            pom="$dir/.flattened-pom.xml"
+            if grep -q '<parent>' "$pom"; then
+              echo "::error::$pom still references a parent"; bad=1
+            fi
+            if grep -q '\${' "$pom"; then
+              echo "::error::$pom has an unresolved property"; bad=1
+            fi
+          done
+          exit $bad

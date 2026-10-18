@@ -5,7 +5,7 @@ import java.io.OutputStream;
 import java.sql.SQLException;
 
 /**
- * Bulk load / export over the Nusa wire {@code COPY} sub-protocol (wire-protocol.md §12) — one
+ * Bulk load / export over the Nusa wire {@code COPY} sub-protocol (wire-protocol.md §12): one
  * round-trip for the whole dataset instead of a row-per-insert.
  *
  * <p>Obtain one from a connection with {@code connection.unwrap(NusaCopyManager.class)}. Data is

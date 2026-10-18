@@ -11,13 +11,13 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * JDBC {@link DatabaseMetaData} for NusaDB (R41-B.02). The introspection methods a tool such as
- * DBeaver uses to build its schema tree — {@link #getCatalogs()}, {@link #getSchemas()},
- * {@link #getTableTypes()}, {@link #getTables}, {@link #getColumns}, {@link #getTypeInfo()} — are
- * answered from the server's {@code information_schema} views (R41-B.01). Primary keys
+ * JDBC {@link DatabaseMetaData} for NusaDB. The introspection methods a tool such as
+ * DBeaver uses to build its schema tree ({@link #getCatalogs()}, {@link #getSchemas()},
+ * {@link #getTableTypes()}, {@link #getTables}, {@link #getColumns}, {@link #getTypeInfo()}) are
+ * answered from the server's {@code information_schema} views. Primary keys
  * ({@link #getPrimaryKeys}) and indexes ({@link #getIndexInfo}) are likewise answered from the
  * {@code information_schema.table_constraints} / {@code key_column_usage} / {@code statistics}
- * views (R41-B.03a). Relational metadata NusaDB does not model yet (foreign keys, procedures)
+ * views. Relational metadata NusaDB does not model yet (foreign keys, procedures)
  * returns an empty result of the JDBC-specified shape, which tools tolerate. Capability flags
  * report NusaDB's single-node SQL surface.
  */
@@ -275,7 +275,7 @@ final class NusaDatabaseMetaData implements DatabaseMetaData {
         // database, so it would only ever surface one catalog). This lets a schema-tree UI show every
         // database as a sibling node, matching how getCatalogs() is expected to behave. The
         // nusadb_databases catalog exposes a single "name" column. Caveat: NusaDB is engine-per-database,
-        // so a connection can only query its own database — selecting another catalog needs a new
+        // so a connection can only query its own database; selecting another catalog needs a new
         // connection.
         String[] cols = {"TABLE_CAT"};
         List<String[]> out = new ArrayList<>();
@@ -354,7 +354,7 @@ final class NusaDatabaseMetaData implements DatabaseMetaData {
             }
             String typeName = r[5];
             boolean nullable = !"NO".equalsIgnoreCase(r[6]);
-            // COLUMN_SIZE / DECIMAL_DIGITS from the reflected length & precision (K2): the declared
+            // COLUMN_SIZE / DECIMAL_DIGITS from the reflected length & precision: the declared
             // VARCHAR(n)/CHAR(n) length, or NUMERIC(p,s) precision, else a per-type default.
             Integer charLen = parseIntOrNull(r[7]);
             Integer numPrecision = parseIntOrNull(r[8]);
@@ -362,7 +362,7 @@ final class NusaDatabaseMetaData implements DatabaseMetaData {
             int columnSize =
                     charLen != null ? charLen : numPrecision != null ? numPrecision : columnSize(typeName);
             String decimalDigits = numScale == null ? null : Integer.toString(numScale);
-            // COLUMN_DEF is the column's DEFAULT SQL (K7); a SERIAL/IDENTITY column's default is
+            // COLUMN_DEF is the column's DEFAULT SQL; a SERIAL/IDENTITY column's default is
             // nextval('<seq>'), which (as mainstream JDBC drivers do) marks it auto-increment.
             String columnDef = r[10];
             String autoIncrement = columnDef != null && columnDef.startsWith("nextval(") ? "YES" : "NO";

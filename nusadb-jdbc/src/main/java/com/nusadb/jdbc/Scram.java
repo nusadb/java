@@ -11,7 +11,7 @@ import javax.crypto.spec.SecretKeySpec;
 
 /**
  * Client-side SCRAM-SHA-256 (RFC 5802 / RFC 7677), docs/wire-protocol.md §7.2. Uses the JDK's
- * built-in {@code javax.crypto} / {@code java.security} — no dependencies.
+ * built-in {@code javax.crypto} / {@code java.security}, with no dependencies.
  */
 final class Scram {
     private static final String GS2_HEADER = "n,,";

@@ -1,14 +1,19 @@
 name: Release
 
-# Publishes three artifacts to Maven Central via the Sonatype Central Portal:
+# Publishes four artifacts to Maven Central via the Sonatype Central Portal:
 #   com.nusadb:nusadb-jdbc
 #   com.nusadb:nusadb-hibernate5
 #   com.nusadb:nusadb-hibernate6
+#   com.nusadb:nusadb-bom
 #
-#   git tag v0.1.0 && git push origin v0.1.0
+#   git tag v0.2.0 && git push origin v0.2.0
 #
-# The driver is deployed FIRST and with <waitUntil>published</waitUntil>: both dialects
-# depend on com.nusadb:nusadb-jdbc, so it has to be resolvable on Central before artifacts
+# The version lives in one place, the `revision` property of the root pom (X.Y.Z-SNAPSHOT
+# between releases). A release builds with -Drevision=X.Y.Z, and flatten-maven-plugin writes
+# that into every published pom. The parent pom and test-support are never published.
+#
+# The driver is deployed FIRST and with <waitUntil>published</waitUntil>: the dialects and the
+# BOM reference com.nusadb:nusadb-jdbc, so it has to be resolvable on Central before artifacts
 # referencing it are validated.
 #
 # Required secrets:
@@ -32,9 +37,13 @@ on:
   push:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
-  # Re-run against a branch to finish a release that failed partway. The version comes from
-  # the poms rather than the tag, and no GitHub Release is cut.
+  # Re-run against a branch to finish a release that failed partway. There is no tag, so the
+  # version to (re)publish is given here. No GitHub Release is cut.
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish, e.g. 0.2.0 (must match the root pom revision without -SNAPSHOT)'
+        required: true
 
 permissions:
   contents: read
@@ -52,56 +61,42 @@ jobs:
           java-version: '17'
           cache: maven
           # Writes a settings.xml whose <server><id> is `central`, matching
-          # <publishingServerId> in the release profile of each pom.
+          # <publishingServerId> in the release profile of the root pom.
           server-id: central
           server-username: MAVEN_USERNAME
           server-password: MAVEN_PASSWORD
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           gpg-passphrase: MAVEN_GPG_PASSPHRASE
 
-      # Four places carry the version: the three <project><version> fields, plus the
-      # nusadb-jdbc <dependency><version> inside each dialect. If the dialects pin an older
-      # driver they would ship pointing at the wrong artifact, so check all of them.
-      #
-      # On a tag the root pom must match the tag. On a manual dispatch there is no tag, so the
-      # root pom *is* the expected version and the other three places must agree with it.
+      # The version comes from the tag (or the dispatch input) and must match the root pom's
+      # `revision`, give or take -SNAPSHOT -- so a tag cannot ship code that was being developed
+      # towards a different version.
       - name: Resolve and verify the version
         id: version
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
           python3 - <<'PY'
-          import os, sys, xml.etree.ElementTree as ET
+          import os, re, sys, xml.etree.ElementTree as ET
 
           NS = {"m": "http://maven.apache.org/POM/4.0.0"}
-          POMS = ("pom.xml", "hibernate5/pom.xml", "hibernate6/pom.xml")
-          roots = {p: ET.parse(p).getroot() for p in POMS}
-
           if os.environ["GITHUB_REF_TYPE"] == "tag":
               expected = os.environ["GITHUB_REF_NAME"].lstrip("v")
               source = "the tag"
           else:
-              expected = roots["pom.xml"].findtext("m:version", namespaces=NS)
-              source = "pom.xml"
+              expected = os.environ["INPUT_VERSION"].strip()
+              source = "the dispatch input"
 
-          errors = []
-          for pom, root in roots.items():
-              version = root.findtext("m:version", namespaces=NS)
-              if version != expected:
-                  errors.append(f"{pom}: <version> is {version}, expected {expected}")
-
-              for dep in root.findall(".//m:dependency", NS):
-                  if dep.findtext("m:artifactId", namespaces=NS) == "nusadb-jdbc":
-                      dv = dep.findtext("m:version", namespaces=NS)
-                      if dv != expected:
-                          errors.append(
-                              f"{pom}: depends on nusadb-jdbc {dv}, expected {expected}"
-                          )
-
-          for e in errors:
-              print(f"::error::{e}")
-          if errors:
+          if not re.fullmatch(r"\d+\.\d+\.\d+", expected):
+              print(f"::error::{source} gives version '{expected}', expected X.Y.Z")
               sys.exit(1)
 
-          print(f"all poms agree on {expected} (from {source})")
+          revision = ET.parse("pom.xml").getroot().findtext("m:properties/m:revision", namespaces=NS)
+          if revision.removesuffix("-SNAPSHOT") != expected:
+              print(f"::error::pom.xml revision is {revision}, but {source} says {expected}")
+              sys.exit(1)
+
+          print(f"publishing {expected} (from {source}; pom revision {revision})")
           with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
               fh.write(f"version={expected}\n")
           PY
@@ -119,7 +114,15 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          for artifact in nusadb-jdbc nusadb-hibernate5 nusadb-hibernate6; do
+          # artifactId -> module directory
+          declare -A modules=(
+            [nusadb-jdbc]=nusadb-jdbc
+            [nusadb-hibernate5]=hibernate5
+            [nusadb-hibernate6]=hibernate6
+            [nusadb-bom]=bom
+          )
+          rest=()
+          for artifact in nusadb-jdbc nusadb-hibernate5 nusadb-hibernate6 nusadb-bom; do
             url="https://repo1.maven.org/maven2/com/nusadb/$artifact/$VERSION/$artifact-$VERSION.pom"
             code=$(curl -sSL -o /dev/null -w '%{http_code}' "$url")
             case "$code" in
@@ -128,36 +131,51 @@ jobs:
               *)   echo "::error::unexpected HTTP $code from $url"; exit 1 ;;
             esac
             echo "$artifact $VERSION -> $state"
-            # Hyphens are operators in GitHub expression syntax, so the output key cannot
-            # carry the artifact id verbatim.
-            echo "${artifact//-/_}=$state" >> "$GITHUB_OUTPUT"
+            if [ "$artifact" = nusadb-jdbc ]; then
+              echo "driver=$state" >> "$GITHUB_OUTPUT"
+            elif [ "$state" = absent ]; then
+              rest+=("${modules[$artifact]}")
+            fi
           done
+          # Comma-separated module list for `mvn -pl`, empty when everything is out already.
+          (IFS=,; echo "rest=${rest[*]}") >> "$GITHUB_OUTPUT"
 
-      # -DskipTests: the only test class (DriverTest) boots a real `nusadb-server` binary,
-      # which is not present in this repository, so it cannot gate the release.
+      # -DskipTests: CI already ran the unit and integration tests on this commit; the release
+      # job has no Docker-backed server to run them against again.
+      #
+      # -am builds what the driver needs from the reactor (the parent, test-support); the
+      # release profile excludes both from the Central bundle, so only nusadb-jdbc is uploaded.
+      # `deploy` runs `install` first, which puts the parent and the driver in the local
+      # repository for the next step.
       - name: Deploy the JDBC driver
-        if: steps.central.outputs.nusadb_jdbc == 'absent'
+        if: steps.central.outputs.driver == 'absent'
         env:
           MAVEN_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
           MAVEN_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
           MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-        run: mvn -B -ntp -Prelease -DskipTests deploy
+          VERSION: ${{ steps.version.outputs.version }}
+        run: mvn -B -ntp -Prelease -DskipTests -Drevision="$VERSION" -pl nusadb-jdbc -am deploy
 
-      - name: Deploy the Hibernate 5 dialect
-        if: steps.central.outputs.nusadb_hibernate5 == 'absent'
+      # When the driver was published by an earlier, partial run, the step above was skipped,
+      # so the parent and test-support (which the dialects' tests compile against) are not in
+      # the local repository yet. Install them; nothing is uploaded.
+      - name: Install the build-only modules locally
+        if: steps.central.outputs.driver == 'published' && steps.central.outputs.rest != ''
         env:
-          MAVEN_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
-          MAVEN_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
-          MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-        run: mvn -B -ntp -Prelease -DskipTests -f hibernate5/pom.xml deploy
+          VERSION: ${{ steps.version.outputs.version }}
+        run: mvn -B -ntp -DskipTests -Drevision="$VERSION" -pl test-support -am install
 
-      - name: Deploy the Hibernate 6 dialect
-        if: steps.central.outputs.nusadb_hibernate6 == 'absent'
+      # Without -am: the driver comes from Central (or the local repository), so it is not
+      # rebuilt into this bundle and uploaded a second time.
+      - name: Deploy the dialects and the BOM
+        if: steps.central.outputs.rest != ''
         env:
           MAVEN_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
           MAVEN_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
           MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-        run: mvn -B -ntp -Prelease -DskipTests -f hibernate6/pom.xml deploy
+          VERSION: ${{ steps.version.outputs.version }}
+          MODULES: ${{ steps.central.outputs.rest }}
+        run: mvn -B -ntp -Prelease -DskipTests -Drevision="$VERSION" -pl "$MODULES" deploy
 
   # Only a tag names a release, so a manual dispatch finishing a partial publish does not
   # try to cut one.

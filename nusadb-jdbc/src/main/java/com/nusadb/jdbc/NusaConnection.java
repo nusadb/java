@@ -22,7 +22,7 @@ import java.util.Properties;
 import java.util.concurrent.Executor;
 
 /**
- * JDBC {@link Connection}. Supports both autocommit (the default — each statement runs on its own
+ * JDBC {@link Connection}. Supports both autocommit (the default, where each statement runs on its own
  * implicit server transaction) and explicit transactions. When autocommit is off a {@code BEGIN} is
  * sent lazily before the first statement of a unit of work; {@link #commit()} and {@link #rollback()}
  * close it with {@code COMMIT}/{@code ROLLBACK} over the wire.
@@ -379,7 +379,7 @@ final class NusaConnection implements Connection, NusaListener {
 
     /**
      * Quotes a savepoint identifier so an arbitrary name (with spaces, punctuation, or embedded
-     * quotes) is emitted safely — the server folds a quoted identifier to its literal value, so the
+     * quotes) is emitted safely. The server folds a quoted identifier to its literal value, so the
      * same quoting on {@code SAVEPOINT} and {@code ROLLBACK TO}/{@code RELEASE} always matches.
      */
     private static String quoteIdentifier(String name) {
@@ -428,9 +428,9 @@ final class NusaConnection implements Connection, NusaListener {
         wire.simpleQuery("RELEASE SAVEPOINT " + quoteIdentifier(sp.sqlName));
     }
 
-    // --- asynchronous notifications (LISTEN/NOTIFY) — reached via unwrap(NusaListener.class) ---
+    // --- asynchronous notifications (LISTEN/NOTIFY), reached via unwrap(NusaListener.class) ---
 
-    /** Quotes a string as a SQL literal (`'…'`, doubling embedded `'`) — used for a NOTIFY payload. */
+    /** Quotes a string as a SQL literal (`'…'`, doubling embedded `'`), used for a NOTIFY payload. */
     private static String quoteLiteral(String text) {
         return '\'' + text.replace("'", "''") + '\'';
     }
