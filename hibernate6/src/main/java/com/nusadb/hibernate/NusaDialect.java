@@ -1,14 +1,26 @@
 package com.nusadb.hibernate;
 
+import jakarta.persistence.TemporalType;
 import java.sql.Types;
+import java.time.temporal.ChronoField;
+import java.time.temporal.TemporalAccessor;
+import java.util.Calendar;
+import java.util.Date;
+import java.util.Locale;
+import java.util.TimeZone;
+import org.hibernate.boot.model.FunctionContributions;
 import org.hibernate.boot.model.TypeContributions;
 import org.hibernate.dialect.DatabaseVersion;
 import org.hibernate.dialect.Dialect;
+import org.hibernate.dialect.function.CommonFunctionFactory;
 import org.hibernate.dialect.identity.IdentityColumnSupport;
 import org.hibernate.dialect.pagination.LimitHandler;
 import org.hibernate.dialect.sequence.SequenceSupport;
 import org.hibernate.engine.spi.SessionFactoryImplementor;
 import org.hibernate.query.sqm.FetchClauseType;
+import org.hibernate.query.sqm.IntervalType;
+import org.hibernate.query.sqm.TemporalUnit;
+import org.hibernate.query.sqm.TrimSpec;
 import org.hibernate.service.ServiceRegistry;
 import org.hibernate.sql.ast.SqlAstTranslator;
 import org.hibernate.sql.ast.SqlAstTranslatorFactory;
@@ -19,6 +31,7 @@ import org.hibernate.sql.exec.spi.JdbcOperation;
 import org.hibernate.tool.schema.extract.internal.SequenceInformationExtractorLegacyImpl;
 import org.hibernate.tool.schema.extract.spi.SequenceInformationExtractor;
 import org.hibernate.type.SqlTypes;
+import org.hibernate.type.descriptor.DateTimeUtils;
 import org.hibernate.type.descriptor.jdbc.UUIDJdbcType;
 import org.hibernate.type.descriptor.sql.internal.DdlTypeImpl;
 
@@ -120,6 +133,216 @@ public class NusaDialect extends Dialect {
     @Override
     public void appendBooleanValueString(SqlAppender appender, boolean bool) {
         appender.appendSql(toBooleanValueString(bool));
+    }
+
+    // ---- HQL functions -------------------------------------------------------------------------
+
+    @Override
+    public void initializeFunctionRegistry(FunctionContributions functionContributions) {
+        super.initializeFunctionRegistry(functionContributions);
+        CommonFunctionFactory functions = new CommonFunctionFactory(functionContributions);
+        // locate() and position(): the server has position(x in y) but no locate().
+        functions.locate_positionSubstring();
+        // trunc()/truncate() of a number with trunc(), of a datetime with date_trunc().
+        functions.trunc_dateTrunc();
+        functions.dateTrunc();
+        // listagg(x, sep) within group (order by ..) as string_agg(x, sep order by ..).
+        functions.listagg_stringAgg("varchar");
+    }
+
+    @Override
+    public String trimPattern(TrimSpec specification, boolean isWhitespace) {
+        // The server needs the character to trim: trim(both ' ' from x), not trim(both from x).
+        return "trim(" + specification.name().toLowerCase(Locale.ROOT) + (isWhitespace ? " ' '" : " ?2") + " from ?1)";
+    }
+
+    @Override
+    public String translateExtractField(TemporalUnit unit) {
+        switch (unit) {
+            case DAY_OF_MONTH:
+                return "day";
+            case DAY_OF_YEAR:
+                return "doy";
+            case DAY_OF_WEEK:
+                return "dow";
+            default:
+                return super.translateExtractField(unit);
+        }
+    }
+
+    @Override
+    public String extractPattern(TemporalUnit unit) {
+        // dow counts Sunday as 0; HQL's day of week counts it as 1.
+        return unit == TemporalUnit.DAY_OF_WEEK ? "(extract(dow from ?2)+1)" : super.extractPattern(unit);
+    }
+
+    @Override
+    public long getFractionalSecondPrecisionInNanos() {
+        return 1_000; // timestamps keep microseconds
+    }
+
+    @Override
+    public String timestampaddPattern(TemporalUnit unit, TemporalType temporalType, IntervalType intervalType) {
+        if (intervalType != null) {
+            return "(?2+?3)";
+        }
+        String interval;
+        switch (unit) {
+            case NANOSECOND:
+                return "(?3+(?2)/1e3*interval '1 microsecond')";
+            case NATIVE:
+                return "(?3+(?2)*interval '1 microsecond')";
+            case HOUR:
+            case MINUTE:
+            case SECOND:
+                return "(?3+(?2)*interval '1 " + unit.name().toLowerCase(Locale.ROOT) + "')";
+            case QUARTER:
+                interval = "3 month";
+                break;
+            case YEAR:
+            case MONTH:
+            case WEEK:
+            case DAY:
+                interval = "1 " + unit.name().toLowerCase(Locale.ROOT);
+                break;
+            default:
+                return super.timestampaddPattern(unit, temporalType, intervalType);
+        }
+        String sum = "(?3+(?2)*interval '" + interval + "')";
+        // date + interval is a timestamp: a date plus whole days, weeks, months stays a date.
+        return temporalType == TemporalType.DATE ? "cast(" + sum + " as date)" : sum;
+    }
+
+    @Override
+    public String timestampdiffPattern(TemporalUnit unit, TemporalType fromTemporalType, TemporalType toTemporalType) {
+        if (unit == null) {
+            return "(?3-?2)";
+        }
+        String months = "(extract(year from age(?3,?2))*12+extract(month from age(?3,?2)))";
+        switch (unit) {
+            case YEAR:
+                return "extract(year from age(?3,?2))";
+            case QUARTER:
+                return "trunc(" + months + "/3)";
+            case MONTH:
+                return months;
+            default:
+                break;
+        }
+        if (fromTemporalType == TemporalType.DATE && toTemporalType == TemporalType.DATE) {
+            // date - date is a whole number of days.
+            switch (unit) {
+                case WEEK:
+                    return "((?3-?2)/7)";
+                case DAY:
+                    return "(?3-?2)";
+                case HOUR:
+                    return "((?3-?2)*24)";
+                case MINUTE:
+                    return "((?3-?2)*1440)";
+                case SECOND:
+                    return "((?3-?2)*86400)";
+                case NATIVE:
+                    return "((?3-?2)*86400000000)";
+                case NANOSECOND:
+                    return "((?3-?2)*86400000000000)";
+                default:
+                    return super.timestampdiffPattern(unit, fromTemporalType, toTemporalType);
+            }
+        }
+        // timestamp - timestamp is an interval of days and time.
+        switch (unit) {
+            case WEEK:
+                return "trunc(extract(day from ?3-?2)/7)";
+            case DAY:
+                return "extract(day from ?3-?2)";
+            case HOUR:
+                return "trunc(extract(epoch from ?3-?2)/3600)";
+            case MINUTE:
+                return "trunc(extract(epoch from ?3-?2)/60)";
+            case SECOND:
+                return "trunc(extract(epoch from ?3-?2))";
+            case NATIVE:
+                return "trunc(extract(epoch from ?3-?2)*1000000)";
+            case NANOSECOND:
+                return "trunc(extract(epoch from ?3-?2)*1000000000)";
+            default:
+                return super.timestampdiffPattern(unit, fromTemporalType, toTemporalType);
+        }
+    }
+
+    @Override
+    public String currentLocalTime() {
+        return "cast(localtimestamp as time)"; // the server has no LOCALTIME
+    }
+
+    // Datetime literals as typed SQL literals (date '..'), not the JDBC escapes ({d '..'}) the
+    // server does not parse.
+
+    @Override
+    public void appendDateTimeLiteral(SqlAppender appender, TemporalAccessor temporalAccessor, TemporalType precision,
+            TimeZone jdbcTimeZone) {
+        boolean offset = temporalAccessor.isSupported(ChronoField.OFFSET_SECONDS);
+        switch (precision) {
+            case DATE:
+                appender.appendSql("date '");
+                DateTimeUtils.appendAsDate(appender, temporalAccessor);
+                break;
+            case TIME:
+                appender.appendSql("time '");
+                DateTimeUtils.appendAsLocalTime(appender, temporalAccessor);
+                break;
+            case TIMESTAMP:
+                appender.appendSql(offset ? "timestamp with time zone '" : "timestamp '");
+                DateTimeUtils.appendAsTimestampWithMicros(appender, temporalAccessor, offset, jdbcTimeZone);
+                break;
+            default:
+                throw new IllegalArgumentException();
+        }
+        appender.appendSql('\'');
+    }
+
+    @Override
+    public void appendDateTimeLiteral(SqlAppender appender, Date date, TemporalType precision, TimeZone jdbcTimeZone) {
+        switch (precision) {
+            case DATE:
+                appender.appendSql("date '");
+                DateTimeUtils.appendAsDate(appender, date);
+                break;
+            case TIME:
+                appender.appendSql("time '");
+                DateTimeUtils.appendAsLocalTime(appender, date);
+                break;
+            case TIMESTAMP:
+                appender.appendSql("timestamp '");
+                DateTimeUtils.appendAsTimestampWithMicros(appender, date, jdbcTimeZone);
+                break;
+            default:
+                throw new IllegalArgumentException();
+        }
+        appender.appendSql('\'');
+    }
+
+    @Override
+    public void appendDateTimeLiteral(SqlAppender appender, Calendar calendar, TemporalType precision,
+            TimeZone jdbcTimeZone) {
+        switch (precision) {
+            case DATE:
+                appender.appendSql("date '");
+                DateTimeUtils.appendAsDate(appender, calendar);
+                break;
+            case TIME:
+                appender.appendSql("time '");
+                DateTimeUtils.appendAsLocalTime(appender, calendar);
+                break;
+            case TIMESTAMP:
+                appender.appendSql("timestamp '");
+                DateTimeUtils.appendAsTimestampWithMicros(appender, calendar, jdbcTimeZone);
+                break;
+            default:
+                throw new IllegalArgumentException();
+        }
+        appender.appendSql('\'');
     }
 
     @Override

@@ -21,6 +21,14 @@ The dialect maps JDBC types to the column types NusaDB accepts (`int`, `bigint`,
 Booleans are rendered as `true`/`false` (so `findByActiveTrue` and `cb.isTrue` work), and
 `java.util.UUID` maps to the native `uuid` column type.
 
+### HQL functions
+
+Besides the standard HQL functions, the dialect renders these the way the server expects:
+`locate()`/`position()`, `trim()`, `extract(day of week|day of month|day of year ...)`, datetime
+arithmetic (`e.at + 1 day`, `(a - b) by day|hour|month|year ...`), `truncate(datetime, month)`,
+`listagg(x, ',') within group (order by ..)`, `local time`, and date/time literals (`{d '..'}`,
+`{ts '..'}`, `local date ..`) as typed SQL literals. `HqlFunctionIT` covers them.
+
 ### Identifiers
 
 Every `@GeneratedValue` strategy works:
