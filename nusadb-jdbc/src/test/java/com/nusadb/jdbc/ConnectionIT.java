@@ -220,6 +220,24 @@ class ConnectionIT {
     }
 
     @Test
+    void columnsReportTheirDeclaredWidth() throws SQLException {
+        try (Connection c = open(); Statement st = c.createStatement()) {
+            st.execute("DROP TABLE IF EXISTS meta_width");
+            st.execute("CREATE TABLE meta_width (s smallint, i int, b bigint, r real, d double precision, c char(3), v varchar(5))");
+            List<String> types = new ArrayList<>();
+            try (ResultSet rs = c.getMetaData().getColumns(null, null, "meta_width", null)) {
+                while (rs.next()) {
+                    types.add(rs.getString("COLUMN_NAME") + ":" + rs.getInt("DATA_TYPE"));
+                }
+            }
+            assertEquals(List.of("s:" + java.sql.Types.SMALLINT, "i:" + java.sql.Types.INTEGER, "b:" + java.sql.Types.BIGINT,
+                    "r:" + java.sql.Types.REAL, "d:" + java.sql.Types.DOUBLE, "c:" + java.sql.Types.CHAR,
+                    "v:" + java.sql.Types.VARCHAR), types);
+            st.execute("DROP TABLE meta_width");
+        }
+    }
+
+    @Test
     void savepointsAreAdvertised() throws SQLException {
         try (Connection c = open()) {
             assertTrue(c.getMetaData().supportsSavepoints());

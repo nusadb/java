@@ -79,13 +79,33 @@ final class NusaDatabaseMetaData implements DatabaseMetaData {
             return Types.OTHER;
         }
         String t = typeName.trim().toUpperCase();
-        if (t.startsWith("INT") || t.equals("BIGINT") || t.equals("SMALLINT")) {
+        // The declared width, as information_schema reports it: a schema validator compares it
+        // with the mapped field (Integer is INTEGER, Long is BIGINT).
+        switch (t) {
+            case "SMALLINT":
+            case "INT2":
+                return Types.SMALLINT;
+            case "INTEGER":
+            case "INT":
+            case "INT4":
+                return Types.INTEGER;
+            case "REAL":
+            case "FLOAT4":
+                return Types.REAL;
+            case "CHARACTER":
+            case "CHAR":
+            case "BPCHAR":
+                return Types.CHAR;
+            default:
+                break;
+        }
+        if (t.startsWith("INT") || t.equals("BIGINT")) {
             return Types.BIGINT;
         }
         if (t.startsWith("BOOL")) {
             return Types.BOOLEAN;
         }
-        if (t.startsWith("FLOAT") || t.equals("REAL") || t.startsWith("DOUBLE")) {
+        if (t.startsWith("FLOAT") || t.startsWith("DOUBLE")) {
             return Types.DOUBLE;
         }
         if (t.startsWith("NUMERIC") || t.startsWith("DECIMAL")) {
@@ -115,10 +135,16 @@ final class NusaDatabaseMetaData implements DatabaseMetaData {
      */
     private static int columnSize(String typeName) {
         switch (sqlType(typeName)) {
+            case Types.SMALLINT:
+                return 5;
+            case Types.INTEGER:
+                return 10;
             case Types.BIGINT:
                 return 19;
             case Types.BOOLEAN:
                 return 1;
+            case Types.REAL:
+                return 8;
             case Types.DOUBLE:
                 return 15;
             case Types.NUMERIC:
