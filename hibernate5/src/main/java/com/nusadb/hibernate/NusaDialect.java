@@ -60,4 +60,10 @@ public class NusaDialect extends Dialect {
         // NusaDB has no sequences: identifiers are application-assigned.
         return false;
     }
+
+    @Override
+    public String toBooleanValueString(boolean bool) {
+        // NusaDB has a real BOOLEAN: comparing it with 1/0 (the generic rendering) is a type error.
+        return bool ? "true" : "false";
+    }
 }

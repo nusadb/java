@@ -1,6 +1,7 @@
 package com.nusadb.hibernate;
 
 import java.sql.Types;
+import org.hibernate.boot.model.TypeContributions;
 import org.hibernate.dialect.DatabaseVersion;
 import org.hibernate.dialect.Dialect;
 import org.hibernate.dialect.identity.IdentityColumnSupport;
@@ -8,11 +9,16 @@ import org.hibernate.dialect.identity.IdentityColumnSupportImpl;
 import org.hibernate.dialect.pagination.LimitHandler;
 import org.hibernate.engine.spi.SessionFactoryImplementor;
 import org.hibernate.query.sqm.FetchClauseType;
+import org.hibernate.service.ServiceRegistry;
 import org.hibernate.sql.ast.SqlAstTranslator;
 import org.hibernate.sql.ast.SqlAstTranslatorFactory;
+import org.hibernate.sql.ast.spi.SqlAppender;
 import org.hibernate.sql.ast.spi.StandardSqlAstTranslatorFactory;
 import org.hibernate.sql.ast.tree.Statement;
 import org.hibernate.sql.exec.spi.JdbcOperation;
+import org.hibernate.type.SqlTypes;
+import org.hibernate.type.descriptor.jdbc.UUIDJdbcType;
+import org.hibernate.type.descriptor.sql.internal.DdlTypeImpl;
 
 /**
  * Hibernate ORM 6.x dialect for NusaDB. A thin layer over the {@code nusadb-jdbc} driver: it maps
@@ -80,6 +86,37 @@ public class NusaDialect extends Dialect {
             default:
                 return super.columnType(sqlTypeCode);
         }
+    }
+
+    @Override
+    protected void registerColumnTypes(TypeContributions typeContributions, ServiceRegistry serviceRegistry) {
+        super.registerColumnTypes(typeContributions, serviceRegistry);
+        typeContributions.getTypeConfiguration().getDdlTypeRegistry()
+                .addDescriptor(new DdlTypeImpl(SqlTypes.UUID, "uuid", this));
+    }
+
+    @Override
+    public void contributeTypes(TypeContributions typeContributions, ServiceRegistry serviceRegistry) {
+        super.contributeTypes(typeContributions, serviceRegistry);
+        // java.util.UUID as the native UUID type (bound with setObject), not as 16 raw bytes.
+        typeContributions.getTypeConfiguration().getJdbcTypeRegistry().addDescriptor(UUIDJdbcType.INSTANCE);
+    }
+
+    @Override
+    public int getPreferredSqlTypeCodeForBoolean() {
+        return Types.BOOLEAN;
+    }
+
+    // NusaDB has a real BOOLEAN: comparing it with 1/0 (the generic rendering) is a type error.
+
+    @Override
+    public String toBooleanValueString(boolean bool) {
+        return bool ? "true" : "false";
+    }
+
+    @Override
+    public void appendBooleanValueString(SqlAppender appender, boolean bool) {
+        appender.appendSql(toBooleanValueString(bool));
     }
 
     @Override

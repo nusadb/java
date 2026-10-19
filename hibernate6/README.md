@@ -18,6 +18,9 @@ The dialect maps JDBC types to the column types NusaDB accepts (`int`, `bigint`,
 `time`, `timestamp`, `varbinary`) and renders pagination (`setMaxResults` /
 `setFirstResult`) as a constant `LIMIT`/`OFFSET` with inlined literals.
 
+Booleans are rendered as `true`/`false` (so `findByActiveTrue` and `cb.isTrue` work), and
+`java.util.UUID` maps to the native `uuid` column type.
+
 ### Identifiers
 
 The NusaDB server supports identity columns (`SERIAL`, `GENERATED ... AS IDENTITY`) and sequences,
