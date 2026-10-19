@@ -331,13 +331,30 @@ final class NusaDatabaseMetaData implements DatabaseMetaData {
         List<String[]> out = new ArrayList<>();
         for (String[] r : query("SELECT table_catalog, table_schema, table_name, table_type "
                 + "FROM information_schema.tables ORDER BY table_name")) {
-            String type = r[3] == null ? "TABLE" : r[3];
+            String type = jdbcTableType(r[3]);
             if (tableNamePattern != null && !likeMatches(tableNamePattern, r[2])) {
+                continue;
+            }
+            if (types != null && !java.util.Arrays.asList(types).contains(type)) {
                 continue;
             }
             out.add(new String[] {r[0], r[1], r[2], type, null, null, null, null, null, null});
         }
         return rows(cols, out);
+    }
+
+    /**
+     * The JDBC table type for an {@code information_schema.tables.table_type}: {@code BASE TABLE} is
+     * {@code TABLE} in JDBC, which is what tools and ORMs (schema update/validate) look for.
+     */
+    static String jdbcTableType(String infoSchemaType) {
+        if (infoSchemaType == null || infoSchemaType.equalsIgnoreCase("BASE TABLE")) {
+            return "TABLE";
+        }
+        if (infoSchemaType.equalsIgnoreCase("LOCAL TEMPORARY")) {
+            return "LOCAL TEMPORARY";
+        }
+        return infoSchemaType.toUpperCase(java.util.Locale.ROOT);
     }
 
     @Override
@@ -1055,7 +1072,7 @@ final class NusaDatabaseMetaData implements DatabaseMetaData {
 
     @Override
     public boolean supportsSavepoints() {
-        return false;
+        return true;
     }
 
     @Override

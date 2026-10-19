@@ -179,6 +179,15 @@ public class NusaDataSource implements DataSource, Serializable {
         options.setProperty("rewriteBatchedInserts", Boolean.toString(rewrite));
     }
 
+    /** {@code text} (the default) or {@code unspecified}; see the driver's {@code stringType} option. */
+    public String getStringType() {
+        return options.getProperty("stringType", "text");
+    }
+
+    public void setStringType(String stringType) {
+        set("stringType", stringType);
+    }
+
     private void set(String key, String value) {
         if (value == null) {
             options.remove(key);

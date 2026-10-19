@@ -31,6 +31,11 @@ final class NusaConnection implements Connection, NusaListener {
     final Wire wire;
     /** Rewrite a batched single-row INSERT into multi-row INSERTs ({@code rewriteBatchedInserts}). */
     final boolean rewriteBatchedInserts;
+    /**
+     * {@code stringType=unspecified}: string parameters are sent untyped and the server infers their
+     * type from the text, as drivers did before 0.2.1. By default they are declared {@code TEXT}.
+     */
+    final boolean untypedStrings;
     private volatile boolean closed;
     private boolean autoCommit = true;
     private boolean inTransaction;
@@ -39,12 +44,13 @@ final class NusaConnection implements Connection, NusaListener {
     private Integer isolation;
 
     NusaConnection(Wire wire) {
-        this(wire, false);
+        this(wire, false, false);
     }
 
-    NusaConnection(Wire wire, boolean rewriteBatchedInserts) {
+    NusaConnection(Wire wire, boolean rewriteBatchedInserts, boolean untypedStrings) {
         this.wire = wire;
         this.rewriteBatchedInserts = rewriteBatchedInserts;
+        this.untypedStrings = untypedStrings;
     }
 
     /**
@@ -174,7 +180,8 @@ final class NusaConnection implements Connection, NusaListener {
     }
 
     @Override
-    public boolean getAutoCommit() {
+    public boolean getAutoCommit() throws SQLException {
+        ensureOpen();
         return autoCommit;
     }
 
@@ -230,7 +237,8 @@ final class NusaConnection implements Connection, NusaListener {
     }
 
     @Override
-    public String nativeSQL(String sql) {
+    public String nativeSQL(String sql) throws SQLException {
+        ensureOpen();
         return sql;
     }
 
@@ -241,24 +249,28 @@ final class NusaConnection implements Connection, NusaListener {
     }
 
     @Override
-    public void setReadOnly(boolean readOnly) {
+    public void setReadOnly(boolean readOnly) throws SQLException {
+        ensureOpen();
         // A hint only (JDBC allows that): the server has no read-only transactions yet, so nothing
         // is enforced and isReadOnly() keeps reporting false.
     }
 
     @Override
-    public boolean isReadOnly() {
+    public boolean isReadOnly() throws SQLException {
+        ensureOpen();
         return false;
     }
 
     @Override
-    public void setCatalog(String catalog) {
+    public void setCatalog(String catalog) throws SQLException {
+        ensureOpen();
         // Engine-per-database: a connection is bound to one database for its lifetime
         // (no in-connection switch), so this is inert.
     }
 
     @Override
-    public String getCatalog() {
+    public String getCatalog() throws SQLException {
+        ensureOpen();
         return wire.database;
     }
 
@@ -326,33 +338,36 @@ final class NusaConnection implements Connection, NusaListener {
     }
 
     @Override
-    public SQLWarning getWarnings() {
+    public SQLWarning getWarnings() throws SQLException {
+        ensureOpen();
         return null;
     }
 
     @Override
-    public void clearWarnings() {
-        // none
+    public void clearWarnings() throws SQLException {
+        ensureOpen(); // pools call this when a connection is returned: a dead one must say so
     }
 
     @Override
-    public void setHoldability(int holdability) {
-        // inert
+    public void setHoldability(int holdability) throws SQLException {
+        ensureOpen();
     }
 
     @Override
-    public int getHoldability() {
+    public int getHoldability() throws SQLException {
+        ensureOpen();
         return java.sql.ResultSet.HOLD_CURSORS_OVER_COMMIT;
     }
 
     @Override
-    public String getSchema() {
+    public String getSchema() throws SQLException {
+        ensureOpen();
         return "public";
     }
 
     @Override
-    public void setSchema(String schema) {
-        // inert
+    public void setSchema(String schema) throws SQLException {
+        ensureOpen();
     }
 
     // --- unsupported surface ---

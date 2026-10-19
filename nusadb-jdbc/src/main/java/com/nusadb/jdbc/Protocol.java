@@ -43,6 +43,17 @@ final class Protocol {
     static final byte T_COPY_DONE = 'c'; // end of the client's COPY data stream
     static final byte T_COPY_FAIL = 'f'; // abort the in-progress COPY: [message:Str]
 
+    // Parameter type tags declared in Parse (§9.2). 0 lets the server infer the type from the value
+    // text, which reads a numeric-looking string as a number (§10.4).
+    static final byte TAG_INFER = 0x00;
+    static final byte TAG_BOOL = 0x01;
+    static final byte TAG_INT = 0x02;
+    static final byte TAG_FLOAT = 0x03;
+    static final byte TAG_NUMERIC = 0x04;
+    static final byte TAG_TEXT = 0x05;
+    static final byte TAG_BYTES = 0x06;
+    static final byte TAG_UUID = 0x0D;
+
     /** {@code Close} / {@code Describe} targets. */
     static final byte TARGET_STATEMENT = 'S';
     static final byte TARGET_PORTAL = 'P';
@@ -280,7 +291,12 @@ final class Protocol {
     }
 
     static byte[] parse(String name, String sql) {
-        return new Writer().str(name).str(sql).u16(0).frame(T_PARSE);
+        return parse(name, sql, new byte[0]);
+    }
+
+    /** Parse with each placeholder's declared type tag, {@code $1} first. */
+    static byte[] parse(String name, String sql, byte[] paramTypes) {
+        return new Writer().str(name).str(sql).u16(paramTypes.length).raw(paramTypes).frame(T_PARSE);
     }
 
     static byte[] bind(String portal, String statement, List<byte[]> values) {

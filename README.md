@@ -86,7 +86,21 @@ sensitive.
 | `connectTimeout` | `10` | Seconds allowed for the TCP connect, TLS handshake and login together. `0` waits forever. `DriverManager.setLoginTimeout` is used when it is set and this is not. |
 | `socketTimeout` | `0` | Seconds to wait for any reply. When it runs out the connection is closed (the late reply would leave the stream out of step). Same as `Connection.setNetworkTimeout`. |
 | `rewriteBatchedInserts` | `false` | Send a batch of a single-row `INSERT ... VALUES (...)` as multi-row INSERTs. See [Batch updates](#batch-updates). |
+| `stringType` | `text` | `text`: string parameters are sent as `TEXT`. `unspecified`: the server infers their type from the value, as before 0.2.1. See [Parameter types](#parameter-types). |
 | `tls`, `tlsCa`, `tlsDomain`, `tlsInsecure` | off | See [TLS](#tls). |
+
+### Parameter types
+
+Every `PreparedStatement` parameter is sent with the type its setter implies: `setString` (and a
+`String`, `Character` or enum in `setObject`) as `TEXT`, `setInt`/`setLong`/... as an integer,
+`setDouble`/`setFloat` as a float, `setBigDecimal` (and a `BigInteger`) as `NUMERIC`, `setBoolean` as
+`BOOLEAN`, `setBytes` as `BYTEA`, a `UUID` as `UUID`. `setObject(value, java.sql.Types.X)` uses `X`.
+So `setString(1, "00123")` stores the text `00123`, not the number 123, and a `BigDecimal` keeps
+every digit. Dates, times, arrays and `NULL` are left for the server to type where they are used.
+
+As with other drivers, a string is then not silently read as a number: `WHERE int_column = ?` with
+`setString(1, "5")` is a type error. Bind numbers with the numeric setters, or set
+`stringType=unspecified` to have string parameters typed by the server from their text again.
 
 ### DataSource
 

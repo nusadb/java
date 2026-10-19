@@ -103,8 +103,20 @@ public final class NusaDriver implements Driver {
                 login > 0 ? login : DEFAULT_CONNECT_TIMEOUT_SECONDS, "connectTimeout");
         o.socketTimeoutMillis = seconds(option(params, info, "socketTimeout"), 0, "socketTimeout");
         boolean rewrite = flag(option(params, info, "rewriteBatchedInserts"));
+        boolean untypedStrings = untypedStrings(option(params, info, "stringType"));
         Wire wire = Wire.connect(o);
-        return new NusaConnection(wire, rewrite);
+        return new NusaConnection(wire, rewrite, untypedStrings);
+    }
+
+    /** {@code stringType}: {@code text} (the default) or {@code unspecified}. */
+    private static boolean untypedStrings(String value) throws SQLException {
+        if (value == null || value.isEmpty() || value.equalsIgnoreCase("text") || value.equalsIgnoreCase("varchar")) {
+            return false;
+        }
+        if (value.equalsIgnoreCase("unspecified")) {
+            return true;
+        }
+        throw new SQLException("nusadb: stringType must be text or unspecified: " + value, "08001");
     }
 
     /** Default connect + login budget, so an unreachable host fails instead of hanging a pool. */
@@ -171,6 +183,8 @@ public final class NusaDriver implements Driver {
             property(info, "socketTimeout", "0", "Seconds to wait for any reply before the connection is closed (0 = forever)."),
             property(info, "rewriteBatchedInserts", "false",
                     "Send a batch of single-row INSERTs as multi-row INSERTs (update counts become SUCCESS_NO_INFO)."),
+            property(info, "stringType", "text",
+                    "text: setString parameters are TEXT. unspecified: the server infers their type from the value."),
         };
     }
 

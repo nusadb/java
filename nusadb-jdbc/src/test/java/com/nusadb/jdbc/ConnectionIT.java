@@ -191,4 +191,49 @@ class ConnectionIT {
         }
         assertThrows(SQLException.class, () -> ds.getConnection(s.user(), "wrong"));
     }
+
+    @Test
+    void tablesAreReportedWithTheJdbcTableType() throws SQLException {
+        try (Connection c = open(); Statement st = c.createStatement()) {
+            st.execute("DROP VIEW IF EXISTS meta_kind_v");
+            st.execute("DROP TABLE IF EXISTS meta_kind");
+            st.execute("CREATE TABLE meta_kind (id INT PRIMARY KEY)");
+            st.execute("CREATE VIEW meta_kind_v AS SELECT id FROM meta_kind");
+            DatabaseMetaData md = c.getMetaData();
+            List<String> all = new ArrayList<>();
+            try (ResultSet rs = md.getTables(null, null, "meta_kind%", null)) {
+                while (rs.next()) {
+                    all.add(rs.getString("TABLE_NAME") + ":" + rs.getString("TABLE_TYPE"));
+                }
+            }
+            assertTrue(all.contains("meta_kind:TABLE"), all.toString());
+            try (ResultSet rs = md.getTables(null, null, "meta_kind", new String[] {"TABLE", "VIEW"})) {
+                assertTrue(rs.next());
+                assertEquals("meta_kind", rs.getString("TABLE_NAME"));
+            }
+            try (ResultSet rs = md.getTables(null, null, "meta_kind", new String[] {"VIEW"})) {
+                assertFalse(rs.next(), "the types filter leaves the table out");
+            }
+            st.execute("DROP VIEW meta_kind_v");
+            st.execute("DROP TABLE meta_kind");
+        }
+    }
+
+    @Test
+    void savepointsAreAdvertised() throws SQLException {
+        try (Connection c = open()) {
+            assertTrue(c.getMetaData().supportsSavepoints());
+        }
+    }
+
+    @Test
+    void aClosedConnectionSaysSo() throws SQLException {
+        Connection c = open();
+        c.close();
+        for (org.junit.jupiter.api.function.Executable call : List.<org.junit.jupiter.api.function.Executable>of(
+                c::clearWarnings, c::getWarnings, c::getAutoCommit, c::getCatalog, c::getSchema, c::isReadOnly)) {
+            SQLException e = assertThrows(SQLException.class, call);
+            assertEquals("08003", e.getSQLState());
+        }
+    }
 }

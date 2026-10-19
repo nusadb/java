@@ -495,10 +495,15 @@ final class Wire {
     }
 
     synchronized String prepareStatement(String sql) throws SQLException {
+        return prepareStatement(sql, new byte[0]);
+    }
+
+    /** Prepares {@code sql} with the given parameter type tags (empty: all inferred). */
+    synchronized String prepareStatement(String sql, byte[] paramTypes) throws SQLException {
         ensureUsable();
         String name = "nusa_stmt_" + (++counter);
         try {
-            send(Protocol.parse(name, sql));
+            send(Protocol.parse(name, sql, paramTypes));
             send(Protocol.sync());
         } catch (IOException e) {
             throw ioError(e);
