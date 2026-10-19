@@ -56,7 +56,7 @@
   <properties>
     <!-- The one version for every module. 0.1.0 is already on Central (immutable), so work
          continues on the next version; a release overrides it with -Drevision=X.Y.Z. -->
-    <revision>0.2.1-SNAPSHOT</revision>
+    <revision>0.3.0-SNAPSHOT</revision>
 
     <maven.compiler.release>17</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
