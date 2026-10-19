@@ -12,7 +12,7 @@ dependencies: SCRAM-SHA-256 uses the JDK's `javax.crypto`. Requires Java 17+.
 <dependency>
   <groupId>com.nusadb</groupId>
   <artifactId>nusadb-jdbc</artifactId>
-  <version>0.2.0</version>
+  <version>0.2.1</version>
 </dependency>
 ```
 
@@ -25,7 +25,7 @@ once and leave the versions out:
     <dependency>
       <groupId>com.nusadb</groupId>
       <artifactId>nusadb-bom</artifactId>
-      <version>0.2.0</version>
+      <version>0.2.1</version>
       <type>pom</type>
       <scope>import</scope>
     </dependency>
