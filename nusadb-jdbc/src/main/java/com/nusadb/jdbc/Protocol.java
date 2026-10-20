@@ -116,8 +116,8 @@ final class Protocol {
             case "TIMESTAMP":
             case "TIMESTAMPTZ": return Types.TIMESTAMP;
             case "UUID":
+            case "ARRAY": return Types.ARRAY;
             case "JSON":
-            case "ARRAY":
             case "VECTOR":
             case "INTERVAL":
             case "TEXT": return Types.VARCHAR;

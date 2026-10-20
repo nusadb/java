@@ -320,6 +320,13 @@ final class NusaResultSet extends AbstractResultSet {
         return b == null ? null : new NusaBlob(b);
     }
 
+    /** An array column, read from its text form {@code {a,b}}; the elements are strings. */
+    @Override
+    public java.sql.Array getArray(int columnIndex) throws SQLException {
+        String s = text(columnIndex);
+        return s == null ? null : new NusaArray("text", NusaArray.parse(s));
+    }
+
     @Override
     public String getNString(int columnIndex) throws SQLException {
         return getString(columnIndex);
@@ -361,6 +368,9 @@ final class NusaResultSet extends AbstractResultSet {
         String type = columnType(columnIndex);
         if ("BYTES".equals(type)) {
             return getBytes(columnIndex);
+        }
+        if ("ARRAY".equals(type)) {
+            return getArray(columnIndex);
         }
         String s = text(columnIndex); // also sets wasNull()
         if (s == null) {
@@ -423,6 +433,9 @@ final class NusaResultSet extends AbstractResultSet {
         }
         if (type == java.sql.Blob.class) {
             return getBlob(columnIndex);
+        }
+        if (type == java.sql.Array.class) {
+            return getArray(columnIndex);
         }
         String s = text(columnIndex); // sets wasNull() for every branch below
         if (s == null) {
@@ -582,6 +595,11 @@ final class NusaResultSet extends AbstractResultSet {
     @Override
     public java.sql.Blob getBlob(String columnLabel) throws SQLException {
         return getBlob(findColumn(columnLabel));
+    }
+
+    @Override
+    public java.sql.Array getArray(String columnLabel) throws SQLException {
+        return getArray(findColumn(columnLabel));
     }
 
     @Override

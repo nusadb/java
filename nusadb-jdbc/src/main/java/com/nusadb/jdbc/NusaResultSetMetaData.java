@@ -65,7 +65,7 @@ final class NusaResultSetMetaData implements ResultSetMetaData {
     @Override
     public String getColumnClassName(int column) throws SQLException {
         check(column);
-        return "java.lang.String";
+        return "ARRAY".equals(typeName(column)) ? "java.sql.Array" : "java.lang.String";
     }
 
     @Override

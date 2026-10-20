@@ -266,6 +266,13 @@ in `setObject` read their source in full and send it as text or bytea. `Connecti
 `createBlob()` give an in-memory value to fill. JPA `@Lob String` and `@Lob byte[]` map to these
 columns.
 
+### Arrays
+
+`setArray` / `createArrayOf` (and a Java array or `Collection` in `setObject`) send the array
+literal `{a,b}`. An array column is reported as `Types.ARRAY`, and `getArray` / `getObject` return a
+`java.sql.Array` whose elements are strings (`null` for `NULL`, `Object[]` for a nested array): the
+server does not report the element type. `getString` returns the text form.
+
 ## Not implemented yet
 
 Scrollable/updatable result sets and `CallableStatement` throw `SQLFeatureNotSupportedException`
