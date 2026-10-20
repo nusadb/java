@@ -7,11 +7,12 @@ and Java 17.
 ## Usage
 
 ```properties
-hibernate.dialect                        = com.nusadb.hibernate.NusaDialect
-hibernate.connection.driver_class        = com.nusadb.jdbc.NusaDriver
-hibernate.connection.url                 = jdbc:nusadb://user@host:5678/nusa
-hibernate.boot.allow_jdbc_metadata_access = false
+hibernate.connection.url = jdbc:nusadb://user@host:5678/nusa
 ```
+
+The URL is enough: the driver registers itself with `DriverManager`, and Hibernate picks
+`NusaDialect` from the product name the connection reports (`NusaDB`). Setting
+`hibernate.dialect = com.nusadb.hibernate.NusaDialect` explicitly still works.
 
 The dialect maps JDBC types to the column types NusaDB accepts (`int`, `bigint`,
 `smallint`, `boolean`, `real`, `double precision`, `numeric(p,s)`, `text`, `date`,
@@ -69,9 +70,10 @@ server reports in `getConstraintName()`.
 
 ### Bootstrap
 
-Set `hibernate.boot.allow_jdbc_metadata_access=false` so Hibernate
-configures itself from this dialect. The driver implements `DatabaseMetaData`, but booting
-Hibernate from it has not been validated with this dialect yet.
+Hibernate reads the connection's `DatabaseMetaData` at boot to choose the dialect, which
+`DialectResolutionIT` covers together with `create-drop`. Since 0.3.0 the default
+`hibernate.boot.allow_jdbc_metadata_access=true` works; set it to `false` to boot without
+connecting, and then `hibernate.dialect` is required.
 
 ## Build & test
 
