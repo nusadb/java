@@ -46,6 +46,11 @@
         <artifactId>nusadb-hibernate6</artifactId>
         <version>${project.version}</version>
       </dependency>
+      <dependency>
+        <groupId>com.nusadb</groupId>
+        <artifactId>nusadb-spring-boot-starter</artifactId>
+        <version>${project.version}</version>
+      </dependency>
     </dependencies>
   </dependencyManagement>
 

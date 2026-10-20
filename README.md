@@ -44,6 +44,10 @@ once and leave the versions out:
 </dependencies>
 ```
 
+A Spring Boot 3 application needs only `nusadb-spring-boot-starter` (from 0.3.0): it brings the
+driver and the Hibernate dialect, and `spring.datasource.url`, `username` and `password` are the
+whole configuration. See [spring-boot-starter/README.md](spring-boot-starter/README.md).
+
 ## Usage
 
 ```java

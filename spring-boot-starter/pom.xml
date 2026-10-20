@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.nusadb</groupId>
+    <artifactId>nusadb-parent</artifactId>
+    <version>${revision}</version>
+  </parent>
+
+  <artifactId>nusadb-spring-boot-starter</artifactId>
+  <packaging>jar</packaging>
+
+  <name>NusaDB Spring Boot Starter</name>
+  <description>Spring Boot 3.x support for NusaDB: the driver, the Hibernate 6 dialect and their configuration from the JDBC URL alone</description>
+  <url>https://github.com/nusadb/java</url>
+
+  <scm>
+    <connection>scm:git:https://github.com/nusadb/java.git</connection>
+    <developerConnection>scm:git:ssh://git@github.com/nusadb/java.git</developerConnection>
+    <url>https://github.com/nusadb/java</url>
+  </scm>
+
+  <properties>
+    <spring-boot.version>3.5.16</spring-boot.version>
+    <hikaricp.version>6.3.3</hikaricp.version>
+  </properties>
+
+  <dependencies>
+    <!-- What the starter brings to the application. -->
+    <dependency>
+      <groupId>com.nusadb</groupId>
+      <artifactId>nusadb-jdbc</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.nusadb</groupId>
+      <artifactId>nusadb-hibernate6</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <!-- Spring Boot and the pool come with the application, in the versions it chose. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot</artifactId>
+      <version>${spring-boot.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.zaxxer</groupId>
+      <artifactId>HikariCP</artifactId>
+      <version>${hikaricp.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-jdbc</artifactId>
+      <version>${spring-boot.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>${junit.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.nusadb</groupId>
+      <artifactId>nusadb-test-support</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>

@@ -96,7 +96,7 @@ jobs:
       - name: Confirm sources and javadoc jars were produced
         run: |
           missing=0
-          for dir in nusadb-jdbc hibernate5 hibernate6; do
+          for dir in nusadb-jdbc hibernate5 hibernate6 spring-boot-starter; do
             for kind in sources javadoc; do
               if ! ls "$dir"/target/*-"$kind".jar >/dev/null 2>&1; then
                 echo "::error::$dir is missing its -$kind.jar (Maven Central requires it)"
@@ -111,7 +111,7 @@ jobs:
           # Consumers (and Central) only ever see the flattened poms: no <parent> (the parent is
           # never published) and no unresolved ${...} versions.
           bad=0
-          for dir in nusadb-jdbc hibernate5 hibernate6 bom; do
+          for dir in nusadb-jdbc hibernate5 hibernate6 spring-boot-starter bom; do
             pom="$dir/.flattened-pom.xml"
             if grep -q '<parent>' "$pom"; then
               echo "::error::$pom still references a parent"; bad=1

@@ -1,9 +1,10 @@
 name: Release
 
-# Publishes four artifacts to Maven Central via the Sonatype Central Portal:
+# Publishes five artifacts to Maven Central via the Sonatype Central Portal:
 #   com.nusadb:nusadb-jdbc
 #   com.nusadb:nusadb-hibernate5
 #   com.nusadb:nusadb-hibernate6
+#   com.nusadb:nusadb-spring-boot-starter
 #   com.nusadb:nusadb-bom
 #
 #   git tag v0.2.0 && git push origin v0.2.0
@@ -119,10 +120,11 @@ jobs:
             [nusadb-jdbc]=nusadb-jdbc
             [nusadb-hibernate5]=hibernate5
             [nusadb-hibernate6]=hibernate6
+            [nusadb-spring-boot-starter]=spring-boot-starter
             [nusadb-bom]=bom
           )
           rest=()
-          for artifact in nusadb-jdbc nusadb-hibernate5 nusadb-hibernate6 nusadb-bom; do
+          for artifact in nusadb-jdbc nusadb-hibernate5 nusadb-hibernate6 nusadb-spring-boot-starter nusadb-bom; do
             url="https://repo1.maven.org/maven2/com/nusadb/$artifact/$VERSION/$artifact-$VERSION.pom"
             code=$(curl -sSL -o /dev/null -w '%{http_code}' "$url")
             case "$code" in
@@ -167,7 +169,7 @@ jobs:
 
       # Without -am: the driver comes from Central (or the local repository), so it is not
       # rebuilt into this bundle and uploaded a second time.
-      - name: Deploy the dialects and the BOM
+      - name: Deploy the dialects, the starter and the BOM
         if: steps.central.outputs.rest != ''
         env:
           MAVEN_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
