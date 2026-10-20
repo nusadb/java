@@ -550,19 +550,24 @@ final class NusaConnection implements Connection, NusaListener {
         return wire.pollNotification(timeoutMillis);
     }
 
+    /** An empty in-memory CLOB; the server stores its value in a {@code text} column. */
     @Override
     public Clob createClob() throws SQLException {
-        throw unsupported();
+        ensureOpen();
+        return new NusaClob("");
     }
 
+    /** An empty in-memory BLOB; the server stores its value in a {@code bytea} column. */
     @Override
     public Blob createBlob() throws SQLException {
-        throw unsupported();
+        ensureOpen();
+        return new NusaBlob(null);
     }
 
     @Override
     public NClob createNClob() throws SQLException {
-        throw unsupported();
+        ensureOpen();
+        return new NusaClob("");
     }
 
     @Override

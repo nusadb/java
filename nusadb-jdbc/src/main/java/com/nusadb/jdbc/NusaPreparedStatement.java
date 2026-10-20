@@ -1,5 +1,8 @@
 package com.nusadb.jdbc;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.Reader;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.sql.Date;
@@ -195,12 +198,164 @@ final class NusaPreparedStatement extends AbstractPreparedStatement {
         set(parameterIndex, x == null ? null : bytes(arrayLiteral(x)));
     }
 
+    // --- LOBs and streams: the server has no large-object store, so each is read in full and sent
+    // as the text or bytea value it stands for ---
+
+    @Override
+    public void setClob(int parameterIndex, java.sql.Clob x) throws SQLException {
+        setString(parameterIndex, x == null ? null : NusaClob.read(x));
+    }
+
+    @Override
+    public void setClob(int parameterIndex, Reader reader) throws SQLException {
+        setString(parameterIndex, read(reader, -1));
+    }
+
+    @Override
+    public void setClob(int parameterIndex, Reader reader, long length) throws SQLException {
+        setString(parameterIndex, read(reader, length));
+    }
+
+    @Override
+    public void setNClob(int parameterIndex, java.sql.NClob value) throws SQLException {
+        setClob(parameterIndex, value);
+    }
+
+    @Override
+    public void setNClob(int parameterIndex, Reader reader) throws SQLException {
+        setClob(parameterIndex, reader);
+    }
+
+    @Override
+    public void setNClob(int parameterIndex, Reader reader, long length) throws SQLException {
+        setClob(parameterIndex, reader, length);
+    }
+
+    @Override
+    public void setNString(int parameterIndex, String value) throws SQLException {
+        setString(parameterIndex, value);
+    }
+
+    @Override
+    public void setCharacterStream(int parameterIndex, Reader reader) throws SQLException {
+        setClob(parameterIndex, reader);
+    }
+
+    @Override
+    public void setCharacterStream(int parameterIndex, Reader reader, int length) throws SQLException {
+        setClob(parameterIndex, reader, length);
+    }
+
+    @Override
+    public void setCharacterStream(int parameterIndex, Reader reader, long length) throws SQLException {
+        setClob(parameterIndex, reader, length);
+    }
+
+    @Override
+    public void setNCharacterStream(int parameterIndex, Reader value) throws SQLException {
+        setClob(parameterIndex, value);
+    }
+
+    @Override
+    public void setNCharacterStream(int parameterIndex, Reader value, long length) throws SQLException {
+        setClob(parameterIndex, value, length);
+    }
+
+    @Override
+    public void setAsciiStream(int parameterIndex, InputStream x) throws SQLException {
+        byte[] b = read(x, -1);
+        setString(parameterIndex, b == null ? null : new String(b, StandardCharsets.US_ASCII));
+    }
+
+    @Override
+    public void setAsciiStream(int parameterIndex, InputStream x, int length) throws SQLException {
+        setAsciiStream(parameterIndex, x, (long) length);
+    }
+
+    @Override
+    public void setAsciiStream(int parameterIndex, InputStream x, long length) throws SQLException {
+        byte[] b = read(x, length);
+        setString(parameterIndex, b == null ? null : new String(b, StandardCharsets.US_ASCII));
+    }
+
+    @Override
+    public void setBlob(int parameterIndex, java.sql.Blob x) throws SQLException {
+        setBytes(parameterIndex, x == null ? null : NusaBlob.read(x));
+    }
+
+    @Override
+    public void setBlob(int parameterIndex, InputStream inputStream) throws SQLException {
+        setBytes(parameterIndex, read(inputStream, -1));
+    }
+
+    @Override
+    public void setBlob(int parameterIndex, InputStream inputStream, long length) throws SQLException {
+        setBytes(parameterIndex, read(inputStream, length));
+    }
+
+    @Override
+    public void setBinaryStream(int parameterIndex, InputStream x) throws SQLException {
+        setBlob(parameterIndex, x);
+    }
+
+    @Override
+    public void setBinaryStream(int parameterIndex, InputStream x, int length) throws SQLException {
+        setBlob(parameterIndex, x, length);
+    }
+
+    @Override
+    public void setBinaryStream(int parameterIndex, InputStream x, long length) throws SQLException {
+        setBlob(parameterIndex, x, length);
+    }
+
+    /** Up to {@code length} characters of the reader (all of it when negative), or null for null. */
+    private static String read(Reader reader, long length) throws SQLException {
+        if (reader == null) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder(length > 0 && length < 1 << 20 ? (int) length : 8192);
+        char[] buf = new char[8192];
+        try {
+            long left = length < 0 ? Long.MAX_VALUE : length;
+            int n;
+            while (left > 0 && (n = reader.read(buf, 0, (int) Math.min(buf.length, left))) > 0) {
+                sb.append(buf, 0, n);
+                left -= n;
+            }
+        } catch (IOException e) {
+            throw new SQLException("nusadb: reading the parameter stream failed: " + e.getMessage(), "HY000", e);
+        }
+        return sb.toString();
+    }
+
+    /** Up to {@code length} bytes of the stream (all of it when negative), or null for null. */
+    private static byte[] read(InputStream in, long length) throws SQLException {
+        if (in == null) {
+            return null;
+        }
+        try {
+            if (length < 0) {
+                return in.readAllBytes();
+            }
+            if (length > Integer.MAX_VALUE) {
+                throw new SQLException("nusadb: a stream over 2^31 bytes cannot be sent", "22001");
+            }
+            return in.readNBytes((int) length);
+        } catch (IOException e) {
+            throw new SQLException("nusadb: reading the parameter stream failed: " + e.getMessage(), "HY000", e);
+        }
+    }
+
     @Override
     public void setObject(int parameterIndex, Object x) throws SQLException {
         if (x == null) {
             set(parameterIndex, null);
         } else if (x instanceof byte[]) {
             setBytes(parameterIndex, (byte[]) x);
+        } else if (x instanceof java.sql.Clob) {
+            setClob(parameterIndex, (java.sql.Clob) x);
+        } else if (x instanceof java.sql.Blob) {
+            setBlob(parameterIndex, (java.sql.Blob) x);
         } else if (x instanceof Boolean) {
             setBoolean(parameterIndex, (Boolean) x);
         } else if (x instanceof java.sql.Array) {

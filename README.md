@@ -253,10 +253,19 @@ TLS 1.2+). Trust a private/self-signed server with `?tls=true&tlsCa=/path/to/ca.
 overrides the verified host name and `tlsInsecure=true` skips verification (dev/test only). These
 may also be passed as JDBC `Properties`.
 
+### LOBs and streams
+
+The server has no separate large-object store: a `TEXT` column holds a CLOB's whole value and a
+`BYTEA` column a BLOB's. `getClob`/`getBlob` (and `getCharacterStream`/`getBinaryStream`) return the
+value already read, and `setClob`/`setBlob`, the `Reader`/`InputStream` setters and a `Clob`/`Blob`
+in `setObject` read their source in full and send it as text or bytea. `Connection.createClob()` and
+`createBlob()` give an in-memory value to fill. JPA `@Lob String` and `@Lob byte[]` map to these
+columns.
+
 ## Not implemented yet
 
-Scrollable/updatable result sets, LOBs (`Blob`/`Clob`) and `CallableStatement` throw
-`SQLFeatureNotSupportedException` where called.
+Scrollable/updatable result sets and `CallableStatement` throw `SQLFeatureNotSupportedException`
+where called.
 
 ## Timeouts and cancellation
 

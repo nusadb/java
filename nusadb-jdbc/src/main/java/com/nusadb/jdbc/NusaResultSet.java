@@ -1,5 +1,9 @@
 package com.nusadb.jdbc;
 
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.io.Reader;
+import java.io.StringReader;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.sql.Date;
@@ -297,6 +301,53 @@ final class NusaResultSet extends AbstractResultSet {
         }
     }
 
+    // A CLOB or BLOB column is a text or bytea value read in full, so these wrap the value.
+
+    @Override
+    public java.sql.Clob getClob(int columnIndex) throws SQLException {
+        return getNClob(columnIndex);
+    }
+
+    @Override
+    public java.sql.NClob getNClob(int columnIndex) throws SQLException {
+        String s = text(columnIndex);
+        return s == null ? null : new NusaClob(s);
+    }
+
+    @Override
+    public java.sql.Blob getBlob(int columnIndex) throws SQLException {
+        byte[] b = getBytes(columnIndex);
+        return b == null ? null : new NusaBlob(b);
+    }
+
+    @Override
+    public String getNString(int columnIndex) throws SQLException {
+        return getString(columnIndex);
+    }
+
+    @Override
+    public Reader getCharacterStream(int columnIndex) throws SQLException {
+        String s = text(columnIndex);
+        return s == null ? null : new StringReader(s);
+    }
+
+    @Override
+    public Reader getNCharacterStream(int columnIndex) throws SQLException {
+        return getCharacterStream(columnIndex);
+    }
+
+    @Override
+    public InputStream getAsciiStream(int columnIndex) throws SQLException {
+        String s = text(columnIndex);
+        return s == null ? null : new ByteArrayInputStream(s.getBytes(StandardCharsets.US_ASCII));
+    }
+
+    @Override
+    public InputStream getBinaryStream(int columnIndex) throws SQLException {
+        byte[] b = getBytes(columnIndex);
+        return b == null ? null : new ByteArrayInputStream(b);
+    }
+
     /** The column's protocol 1.1 type name (e.g. {@code "INT"}), or {@code null} if not reported. */
     private String columnType(int columnIndex) {
         int i = columnIndex - 1;
@@ -366,6 +417,12 @@ final class NusaResultSet extends AbstractResultSet {
         }
         if (type == byte[].class) {
             return getBytes(columnIndex);
+        }
+        if (type == java.sql.Clob.class || type == java.sql.NClob.class) {
+            return getNClob(columnIndex);
+        }
+        if (type == java.sql.Blob.class) {
+            return getBlob(columnIndex);
         }
         String s = text(columnIndex); // sets wasNull() for every branch below
         if (s == null) {
@@ -510,6 +567,46 @@ final class NusaResultSet extends AbstractResultSet {
     @Override
     public Timestamp getTimestamp(String columnLabel) throws SQLException {
         return getTimestamp(findColumn(columnLabel));
+    }
+
+    @Override
+    public java.sql.Clob getClob(String columnLabel) throws SQLException {
+        return getClob(findColumn(columnLabel));
+    }
+
+    @Override
+    public java.sql.NClob getNClob(String columnLabel) throws SQLException {
+        return getNClob(findColumn(columnLabel));
+    }
+
+    @Override
+    public java.sql.Blob getBlob(String columnLabel) throws SQLException {
+        return getBlob(findColumn(columnLabel));
+    }
+
+    @Override
+    public String getNString(String columnLabel) throws SQLException {
+        return getNString(findColumn(columnLabel));
+    }
+
+    @Override
+    public Reader getCharacterStream(String columnLabel) throws SQLException {
+        return getCharacterStream(findColumn(columnLabel));
+    }
+
+    @Override
+    public Reader getNCharacterStream(String columnLabel) throws SQLException {
+        return getNCharacterStream(findColumn(columnLabel));
+    }
+
+    @Override
+    public InputStream getAsciiStream(String columnLabel) throws SQLException {
+        return getAsciiStream(findColumn(columnLabel));
+    }
+
+    @Override
+    public InputStream getBinaryStream(String columnLabel) throws SQLException {
+        return getBinaryStream(findColumn(columnLabel));
     }
 
     @Override
