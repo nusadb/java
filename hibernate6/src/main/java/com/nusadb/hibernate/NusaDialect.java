@@ -17,6 +17,7 @@ import org.hibernate.dialect.identity.IdentityColumnSupport;
 import org.hibernate.dialect.pagination.LimitHandler;
 import org.hibernate.dialect.sequence.SequenceSupport;
 import org.hibernate.engine.spi.SessionFactoryImplementor;
+import org.hibernate.exception.spi.ViolatedConstraintNameExtractor;
 import org.hibernate.query.sqm.FetchClauseType;
 import org.hibernate.query.sqm.IntervalType;
 import org.hibernate.query.sqm.TemporalUnit;
@@ -377,6 +378,34 @@ public class NusaDialect extends Dialect {
     public boolean supportsInsertReturningGeneratedKeys() {
         // getGeneratedKeys() with the key column names: the driver appends RETURNING <columns>.
         return true;
+    }
+
+    // Schema drops (create, create-drop) name tables and constraints that may not exist yet, as on a
+    // fresh database: "drop table if exists t cascade", "alter table if exists t drop constraint if exists c".
+
+    @Override
+    public boolean supportsIfExistsBeforeTableName() {
+        return true;
+    }
+
+    @Override
+    public boolean supportsIfExistsAfterAlterTable() {
+        return true;
+    }
+
+    @Override
+    public boolean supportsIfExistsBeforeConstraintName() {
+        return true;
+    }
+
+    @Override
+    public String getCascadeConstraintsString() {
+        return " cascade";
+    }
+
+    @Override
+    public ViolatedConstraintNameExtractor getViolatedConstraintNameExtractor() {
+        return NusaConstraintNames::of;
     }
 
     @Override

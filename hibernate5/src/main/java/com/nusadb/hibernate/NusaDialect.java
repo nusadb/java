@@ -3,6 +3,7 @@ package com.nusadb.hibernate;
 import java.sql.Types;
 import org.hibernate.dialect.Dialect;
 import org.hibernate.dialect.pagination.LimitHandler;
+import org.hibernate.exception.spi.ViolatedConstraintNameExtracter;
 
 /**
  * Hibernate ORM 5.6 dialect for NusaDB. A thin layer over the {@code nusadb-jdbc} driver: it registers
@@ -59,6 +60,33 @@ public class NusaDialect extends Dialect {
     public boolean supportsSequences() {
         // NusaDB has no sequences: identifiers are application-assigned.
         return false;
+    }
+
+    // Schema drops name tables and constraints that may not exist yet, as on a fresh database.
+
+    @Override
+    public boolean supportsIfExistsBeforeTableName() {
+        return true;
+    }
+
+    @Override
+    public boolean supportsIfExistsAfterAlterTable() {
+        return true;
+    }
+
+    @Override
+    public boolean supportsIfExistsBeforeConstraintName() {
+        return true;
+    }
+
+    @Override
+    public String getCascadeConstraintsString() {
+        return " cascade";
+    }
+
+    @Override
+    public ViolatedConstraintNameExtracter getViolatedConstraintNameExtracter() {
+        return NusaConstraintNames::of;
     }
 
     @Override

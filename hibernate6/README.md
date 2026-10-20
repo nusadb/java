@@ -52,6 +52,14 @@ SELECT max(id) + 50 + 1 FROM product;                          -- say 1051
 CREATE SEQUENCE product_seq START WITH 1051 INCREMENT BY 50;   -- may share the old table's name
 ```
 
+### Schema and errors
+
+`hbm2ddl.auto=create` and `create-drop` work on a fresh database, also with
+`hibernate.hbm2ddl.halt_on_error=true`: tables are dropped with `drop table if exists ... cascade`
+and foreign keys with `alter table if exists ... drop constraint if exists`. A unique, foreign key or
+check violation raises Hibernate's `ConstraintViolationException` with the constraint name the
+server reports in `getConstraintName()`.
+
 ### Bootstrap
 
 Set `hibernate.boot.allow_jdbc_metadata_access=false` so Hibernate
