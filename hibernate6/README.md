@@ -52,6 +52,13 @@ SELECT max(id) + 50 + 1 FROM product;                          -- say 1051
 CREATE SEQUENCE product_seq START WITH 1051 INCREMENT BY 50;   -- may share the old table's name
 ```
 
+### Bulk UPDATE and DELETE
+
+An HQL `update` or `delete` whose `where` navigates to another entity
+(`update Product p set p.price = p.price * 2 where p.category.name = :c`) is rendered with an
+uncorrelated `id in (select ...)` subquery, which the server runs. An entity with a composite id
+cannot use this form yet.
+
 ### Schema and errors
 
 `hbm2ddl.auto=create` and `create-drop` work on a fresh database, also with
