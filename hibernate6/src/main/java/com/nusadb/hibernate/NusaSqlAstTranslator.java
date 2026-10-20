@@ -6,9 +6,16 @@ import org.hibernate.engine.spi.SessionFactoryImplementor;
 import org.hibernate.metamodel.mapping.EntityIdentifierMapping;
 import org.hibernate.metamodel.mapping.EntityMappingType;
 import org.hibernate.metamodel.mapping.SelectableMapping;
+import org.hibernate.query.sqm.FetchClauseType;
 import org.hibernate.spi.NavigablePath;
+import org.hibernate.sql.ast.Clause;
 import org.hibernate.sql.ast.spi.StandardSqlAstTranslator;
 import org.hibernate.sql.ast.tree.AbstractUpdateOrDeleteStatement;
+import org.hibernate.sql.ast.tree.cte.CteStatement;
+import org.hibernate.sql.ast.tree.expression.JdbcParameter;
+import org.hibernate.sql.ast.tree.insert.ConflictClause;
+import org.hibernate.sql.ast.tree.insert.InsertSelectStatement;
+import org.hibernate.sql.exec.spi.JdbcParameterBindings;
 import org.hibernate.sql.ast.tree.Statement;
 import org.hibernate.sql.ast.tree.expression.ColumnReference;
 import org.hibernate.sql.ast.tree.expression.Expression;
@@ -19,8 +26,10 @@ import org.hibernate.sql.ast.tree.from.TableGroupJoin;
 import org.hibernate.sql.ast.tree.predicate.ExistsPredicate;
 import org.hibernate.sql.ast.tree.predicate.InSubQueryPredicate;
 import org.hibernate.sql.ast.tree.predicate.Predicate;
+import org.hibernate.sql.ast.tree.select.QueryGroup;
 import org.hibernate.sql.ast.tree.select.QueryPart;
 import org.hibernate.sql.ast.tree.select.QuerySpec;
+import org.hibernate.sql.ast.tree.select.SelectStatement;
 import org.hibernate.sql.results.internal.SqlSelectionImpl;
 import org.hibernate.sql.exec.spi.JdbcOperation;
 import org.hibernate.sql.model.internal.TableInsertStandard;
@@ -38,6 +47,8 @@ import org.hibernate.sql.model.internal.TableInsertStandard;
  * {@code OFFSET .. FETCH FIRST ? ROWS ONLY} (which binds the count as a JDBC parameter) cannot be used.
  */
 final class NusaSqlAstTranslator<T extends JdbcOperation> extends StandardSqlAstTranslator<T> {
+
+    private int setOperationAliases;
 
     NusaSqlAstTranslator(SessionFactoryImplementor sessionFactory, Statement statement) {
         super(sessionFactory, statement);
@@ -103,6 +114,86 @@ final class NusaSqlAstTranslator<T extends JdbcOperation> extends StandardSqlAst
         return new InSubQueryPredicate(idColumn, subquery, false);
     }
 
+    /**
+     * A set operation used as a subquery in a predicate or the select list
+     * ({@code x in (select .. union select ..)}) is rendered as a derived table,
+     * {@code x in (select * from (select .. union select ..) so_0_)}: the server runs UNION,
+     * INTERSECT and EXCEPT in FROM but not directly inside IN or EXISTS. A CTE body (where a
+     * recursive CTE needs the bare UNION), a derived table and a group inside a group are left as
+     * they are.
+     */
+    @Override
+    public void visitQueryGroup(QueryGroup queryGroup) {
+        Clause clause = getClauseStack().getCurrent();
+        if (queryGroup.isRoot() || getQueryPartStack().getCurrent() instanceof QueryGroup
+                || (clause != Clause.WHERE && clause != Clause.HAVING && clause != Clause.SELECT)) {
+            super.visitQueryGroup(queryGroup);
+            return;
+        }
+        appendSql("select * from (");
+        super.visitQueryGroup(queryGroup);
+        appendSql(") so_");
+        appendSql(Integer.toString(setOperationAliases++));
+        appendSql('_');
+    }
+
+    /**
+     * A non-recursive CTE whose body is a query is rendered as
+     * {@code name (a, b) as (select * from (<body>) cte_ (a, b))}. The server ignores the CTE's
+     * column list when the CTE is the right side of a join, so the columns are named once more by
+     * the derived table, which it honours everywhere. A recursive CTE refers to itself in its
+     * body and is left as it is.
+     */
+    @Override
+    protected void visitCteDefinition(CteStatement cte) {
+        if (cte.isRecursive() || !(cte.getCteDefinition() instanceof SelectStatement)) {
+            super.visitCteDefinition(cte);
+            return;
+        }
+        // A root query part gets its parentheses from the caller, a nested one renders its own.
+        boolean ownParentheses = !((SelectStatement) cte.getCteDefinition()).getQueryPart().isRoot();
+        appendSql("select * from ");
+        if (!ownParentheses) {
+            appendSql('(');
+        }
+        super.visitCteDefinition(cte);
+        if (!ownParentheses) {
+            appendSql(')');
+        }
+        appendSql(" cte_ (");
+        renderCteColumns(cte);
+        appendSql(')');
+    }
+
+    /**
+     * In {@code INSERT ... SELECT} a parameter is rendered as its literal value: the server does
+     * not bind parameters there ("parameter $1 was not bound"). Hibernate's helper tables for HQL
+     * insert-select and multi-table mutations always bind the session id this way. Hibernate then
+     * treats the SQL as specific to those values and does not reuse it for others.
+     */
+    @Override
+    public void visitParameter(JdbcParameter jdbcParameter) {
+        // The root statement: getCurrentDmlStatement() leaves out an INSERT with a query source.
+        Statement root = getStatement();
+        JdbcParameterBindings bindings = getJdbcParameterBindings();
+        if (root instanceof InsertSelectStatement && ((InsertSelectStatement) root).getSourceSelectStatement() != null
+                && bindings != null && bindings.getBinding(jdbcParameter) != null) {
+            renderExpressionAsLiteral(jdbcParameter, bindings);
+            return;
+        }
+        super.visitParameter(jdbcParameter);
+    }
+
+    /**
+     * HQL upsert ({@code insert ... on conflict (..) do update set .. / do nothing}, Hibernate 6.5
+     * and later) as the standard {@code ON CONFLICT} clause, which the server runs. Hibernate 6.4
+     * has no conflict clause and never calls this.
+     */
+    @Override
+    protected void visitConflictClause(ConflictClause conflictClause) {
+        visitStandardConflictClause(conflictClause);
+    }
+
     @Override
     protected void renderOffsetFetchClause(QueryPart queryPart, boolean renderOffsetRowsKeyword) {
         final Expression offset;
@@ -114,6 +205,18 @@ final class NusaSqlAstTranslator<T extends JdbcOperation> extends StandardSqlAst
         } else {
             offset = queryPart.getOffsetClauseExpression();
             fetch = queryPart.getFetchClauseExpression();
+            if (fetch != null && queryPart.getFetchClauseType() == FetchClauseType.ROWS_WITH_TIES) {
+                // LIMIT has no WITH TIES: the rows tied with the last one need the ANSI clause.
+                if (offset != null) {
+                    appendSql(" offset ");
+                    renderExpressionAsLiteral(offset, getJdbcParameterBindings());
+                    appendSql(" rows");
+                }
+                appendSql(" fetch first ");
+                renderExpressionAsLiteral(fetch, getJdbcParameterBindings());
+                appendSql(" rows with ties");
+                return;
+            }
         }
         if (fetch != null) {
             appendSql(" limit ");

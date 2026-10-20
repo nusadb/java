@@ -23,8 +23,12 @@
     <url>https://github.com/nusadb/java</url>
   </scm>
 
+  <!-- Compiled against Hibernate 6.6, the version Spring Boot 3.4 and 3.5 ship; HQL upsert
+       (insert ... on conflict) needs its 6.5+ API. The dialect still runs on 6.4: `-Phibernate-6.4`
+       runs the tests against a 6.4 runtime, where the 6.5+ code is never called. -->
   <properties>
-    <hibernate.version>6.4.4.Final</hibernate.version>
+    <hibernate.version>6.6.53.Final</hibernate.version>
+    <hibernate.minimum.version>6.4.4.Final</hibernate.minimum.version>
   </properties>
 
   <dependencies>
@@ -55,4 +59,47 @@
       <scope>test</scope>
     </dependency>
   </dependencies>
+
+  <profiles>
+    <!-- The same compiled classes and tests, run on the oldest supported Hibernate. -->
+    <profile>
+      <id>hibernate-6.4</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-surefire-plugin</artifactId>
+            <configuration>
+              <classpathDependencyExcludes>
+                <classpathDependencyExclude>org.hibernate.orm:hibernate-core</classpathDependencyExclude>
+              </classpathDependencyExcludes>
+              <additionalClasspathDependencies>
+                <additionalClasspathDependency>
+                  <groupId>org.hibernate.orm</groupId>
+                  <artifactId>hibernate-core</artifactId>
+                  <version>${hibernate.minimum.version}</version>
+                </additionalClasspathDependency>
+              </additionalClasspathDependencies>
+            </configuration>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-failsafe-plugin</artifactId>
+            <configuration>
+              <classpathDependencyExcludes>
+                <classpathDependencyExclude>org.hibernate.orm:hibernate-core</classpathDependencyExclude>
+              </classpathDependencyExcludes>
+              <additionalClasspathDependencies>
+                <additionalClasspathDependency>
+                  <groupId>org.hibernate.orm</groupId>
+                  <artifactId>hibernate-core</artifactId>
+                  <version>${hibernate.minimum.version}</version>
+                </additionalClasspathDependency>
+              </additionalClasspathDependencies>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>

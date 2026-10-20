@@ -1,6 +1,8 @@
 package com.nusadb.hibernate;
 
 import jakarta.persistence.TemporalType;
+import java.sql.DatabaseMetaData;
+import java.sql.SQLException;
 import java.sql.Types;
 import java.time.temporal.ChronoField;
 import java.time.temporal.TemporalAccessor;
@@ -8,6 +10,8 @@ import java.util.Calendar;
 import java.util.Date;
 import java.util.Locale;
 import java.util.TimeZone;
+import org.hibernate.PessimisticLockException;
+import org.hibernate.QueryTimeoutException;
 import org.hibernate.boot.model.FunctionContributions;
 import org.hibernate.boot.model.TypeContributions;
 import org.hibernate.dialect.DatabaseVersion;
@@ -16,12 +20,19 @@ import org.hibernate.dialect.function.CommonFunctionFactory;
 import org.hibernate.dialect.identity.IdentityColumnSupport;
 import org.hibernate.dialect.pagination.LimitHandler;
 import org.hibernate.dialect.sequence.SequenceSupport;
+import org.hibernate.engine.jdbc.env.spi.IdentifierCaseStrategy;
+import org.hibernate.engine.jdbc.env.spi.IdentifierHelper;
+import org.hibernate.engine.jdbc.env.spi.IdentifierHelperBuilder;
 import org.hibernate.engine.spi.SessionFactoryImplementor;
+import org.hibernate.exception.LockAcquisitionException;
+import org.hibernate.exception.spi.SQLExceptionConversionDelegate;
 import org.hibernate.exception.spi.ViolatedConstraintNameExtractor;
+import org.hibernate.internal.util.JdbcExceptionHelper;
 import org.hibernate.query.sqm.FetchClauseType;
 import org.hibernate.query.sqm.IntervalType;
 import org.hibernate.query.sqm.TemporalUnit;
 import org.hibernate.query.sqm.TrimSpec;
+import org.hibernate.query.sqm.produce.function.StandardFunctionArgumentTypeResolvers;
 import org.hibernate.service.ServiceRegistry;
 import org.hibernate.sql.ast.SqlAstTranslator;
 import org.hibernate.sql.ast.SqlAstTranslatorFactory;
@@ -119,6 +130,21 @@ public class NusaDialect extends Dialect {
         typeContributions.getTypeConfiguration().getJdbcTypeRegistry().addDescriptor(UUIDJdbcType.INSTANCE);
     }
 
+    /**
+     * Without JDBC metadata ({@code hibernate.boot.allow_jdbc_metadata_access=false}) Hibernate
+     * assumes the standard upper-case storage of unquoted names and looks tables up as
+     * {@code GEN_AUTO}; the server stores them in lower case, quoted ones as written.
+     */
+    @Override
+    public IdentifierHelper buildIdentifierHelper(IdentifierHelperBuilder builder, DatabaseMetaData dbMetaData)
+            throws SQLException {
+        if (dbMetaData == null) {
+            builder.setUnquotedCaseStrategy(IdentifierCaseStrategy.LOWER);
+            builder.setQuotedCaseStrategy(IdentifierCaseStrategy.MIXED);
+        }
+        return super.buildIdentifierHelper(builder, dbMetaData);
+    }
+
     @Override
     public int getPreferredSqlTypeCodeForBoolean() {
         return Types.BOOLEAN;
@@ -149,6 +175,73 @@ public class NusaDialect extends Dialect {
         functions.dateTrunc();
         // listagg(x, sep) within group (order by ..) as string_agg(x, sep order by ..).
         functions.listagg_stringAgg("varchar");
+
+        // Numeric and string functions the server has under these names.
+        functions.cot();
+        functions.radians();
+        functions.degrees();
+        functions.log();
+        functions.log10();
+        functions.sinh();
+        functions.cosh();
+        functions.tanh();
+        functions.moreHyperbolic();
+        functions.cbrt();
+        functions.pi();
+        functions.trim2();
+        functions.repeat();
+        functions.md5();
+        functions.initcap();
+        functions.substr();
+        functions.translate();
+        functions.toCharNumberDateTimestamp();
+        functions.ascii();
+        functions.char_chr();
+        functions.insert_overlay();
+        functions.overlay();
+        functions.makeDateTimeTimestamp();
+        functions.bitandorxornot_operator();
+        functions.bitAndOr();
+        // # is xor on the server; ^ (the generic rendering) is exponentiation. The spaces matter:
+        // the server reads #3 as an identifier.
+        functionContributions.getFunctionRegistry().patternDescriptorBuilder("bitxor", "(?1 # ?2)")
+                .setExactArgumentCount(2)
+                .setArgumentTypeResolver(StandardFunctionArgumentTypeResolvers.ARGUMENT_OR_IMPLIED_RESULT_TYPE)
+                .register();
+
+        // Aggregates: boolean, statistical, ordered-set and window functions.
+        functions.everyAny_boolAndOr();
+        functions.median_percentileCont(false);
+        functions.stddev();
+        functions.stddevPopSamp();
+        functions.variance();
+        functions.varPopSamp();
+        functions.covarPopSamp();
+        functions.corr();
+        functions.regrLinearRegressionAggregates();
+        functions.inverseDistributionOrderedSetAggregates();
+        functions.hypotheticalOrderedSetAggregates();
+        functions.windowFunctions();
+
+        // Arrays: ARRAY[..] constructors and the array_* functions.
+        functions.array_postgresql();
+        functions.arrayAggregate();
+        functions.arrayPosition_postgresql();
+        functions.arrayPositions_postgresql();
+        functions.arrayLength_cardinality();
+        functions.arrayConcat_postgresql();
+        functions.arrayPrepend_postgresql();
+        functions.arrayAppend_postgresql();
+        functions.arrayContains_postgresql();
+        functions.arrayGet_bracket();
+        functions.arraySet_unnest();
+        functions.arrayRemove();
+        functions.arrayRemoveIndex_unnest(true);
+        functions.arraySlice_operator();
+        functions.arrayReplace();
+        functions.arrayTrim_trim_array();
+        functions.arrayFill_postgresql();
+        functions.arrayToString_postgresql();
     }
 
     @Override
@@ -353,9 +446,98 @@ public class NusaDialect extends Dialect {
 
     @Override
     public boolean supportsFetchClause(FetchClauseType type) {
-        // NusaDB has no ANSI 'OFFSET .. FETCH' clause; pagination is rendered as a constant
-        // 'LIMIT'/'OFFSET' by NusaSqlAstTranslator (the server rejects a parameterised row count).
-        return false;
+        // Row counts are rendered by NusaSqlAstTranslator with constant values (the server
+        // rejects a parameterised row count): LIMIT/OFFSET, or FETCH FIRST .. ROWS WITH TIES.
+        // A percentage is left to Hibernate's window-function emulation.
+        return type == FetchClauseType.ROWS_ONLY || type == FetchClauseType.ROWS_WITH_TIES;
+    }
+
+    // Query features the server runs as written, so Hibernate need not emulate them.
+
+    @Override
+    public boolean supportsWindowFunctions() {
+        return true;
+    }
+
+    @Override
+    public boolean supportsRecursiveCTE() {
+        return true;
+    }
+
+    @Override
+    public boolean supportsNonQueryWithCTE() {
+        return true;
+    }
+
+    @Override
+    public boolean supportsLateral() {
+        return true;
+    }
+
+    @Override
+    public boolean supportsValuesList() {
+        return true;
+    }
+
+    @Override
+    public boolean supportsDistinctFromPredicate() {
+        return true;
+    }
+
+    @Override
+    public boolean supportsCaseInsensitiveLike() {
+        return true;
+    }
+
+    @Override
+    public String getCaseInsensitiveLike() {
+        return "ilike"; // the generic answer is "like", which is case sensitive
+    }
+
+    @Override
+    public boolean supportsIsTrue() {
+        return true;
+    }
+
+    @Override
+    public boolean supportsTupleCounts() {
+        return true;
+    }
+
+    @Override
+    public boolean supportsPartitionBy() {
+        return true;
+    }
+
+    @Override
+    public boolean supportsNoWait() {
+        return true;
+    }
+
+    @Override
+    public boolean supportsSkipLocked() {
+        return true;
+    }
+
+    // Multi-table bulk mutations and HQL insert-select keep Hibernate's default: persistent HT_/HTE_
+    // helper tables, created once when the session factory starts and shared through a session id
+    // column. The alternatives need the server to do more first:
+    // - CTE strategies fetch a block of sequence values with nextval() in a query over several
+    //   rows, which the server does not evaluate (nextval() runs once per statement).
+    // - session-local temporary tables are created inside the application's transaction, and the
+    //   server rejects a prepared INSERT into a table created earlier in the same transaction.
+
+    // Arrays as the server's element[] types, read and written with java.sql.Array.
+
+    @Override
+    public boolean supportsStandardArrays() {
+        return true;
+    }
+
+    @Override
+    public String getArrayTypeName(String javaElementTypeName, String elementTypeName, Integer maxLength) {
+        // The server parses element[] but not the standard "element array" spelling.
+        return elementTypeName + "[]";
     }
 
     @Override
@@ -406,6 +588,31 @@ public class NusaDialect extends Dialect {
     @Override
     public ViolatedConstraintNameExtractor getViolatedConstraintNameExtractor() {
         return NusaConstraintNames::of;
+    }
+
+    /**
+     * Lock and timeout errors as Hibernate's typed exceptions (so Spring reports a
+     * {@code PessimisticLockingFailureException} or {@code QueryTimeoutException}); the server uses
+     * the standard SQLStates for them.
+     */
+    @Override
+    public SQLExceptionConversionDelegate buildSQLExceptionConversionDelegate() {
+        return (sqlException, message, sql) -> {
+            String sqlState = JdbcExceptionHelper.extractSqlState(sqlException);
+            if (sqlState == null) {
+                return null;
+            }
+            switch (sqlState) {
+                case "40P01": // deadlock detected
+                    return new LockAcquisitionException(message, sqlException, sql);
+                case "55P03": // lock not available: FOR UPDATE NOWAIT
+                    return new PessimisticLockException(message, sqlException, sql);
+                case "57014": // statement cancelled by its timeout
+                    return new QueryTimeoutException(message, sqlException, sql);
+                default:
+                    return null;
+            }
+        };
     }
 
     @Override

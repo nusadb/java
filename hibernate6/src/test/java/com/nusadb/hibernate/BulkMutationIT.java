@@ -40,6 +40,16 @@ class BulkMutationIT {
         Category category;
     }
 
+    @Entity(name = "BulkLabel")
+    @Table(name = "bulk_label")
+    public static class Label {
+        @Id
+        @jakarta.persistence.GeneratedValue(strategy = jakarta.persistence.GenerationType.SEQUENCE)
+        Long id;
+
+        String text;
+    }
+
     private static SessionFactory sf;
 
     @BeforeAll
@@ -51,6 +61,7 @@ class BulkMutationIT {
         cfg.setProperty("hibernate.hbm2ddl.auto", "create");
         cfg.addAnnotatedClass(Category.class);
         cfg.addAnnotatedClass(Product.class);
+        cfg.addAnnotatedClass(Label.class);
         sf = cfg.buildSessionFactory();
     }
 
@@ -111,6 +122,18 @@ class BulkMutationIT {
         assertEquals(1, n);
         Long left = sf.fromSession(s -> s.createQuery("select count(*) from BulkProduct", Long.class).getSingleResult());
         assertEquals(3L, left);
+    }
+
+    @Test
+    void insertSelectGeneratesSequenceIds() {
+        // Goes through the HTE_ helper table; each id comes from its own nextval().
+        int n = sf.fromTransaction(s -> s.createMutationQuery(
+                "insert into BulkLabel (text) select p.category.name from BulkProduct p where p.category.name = 'Games'")
+                .executeUpdate());
+        assertEquals(3, n);
+        List<Long> ids = sf.fromSession(s -> s.createQuery("select l.id from BulkLabel l", Long.class).getResultList());
+        assertEquals(3, ids.stream().distinct().count());
+        sf.inTransaction(s -> s.createMutationQuery("delete from BulkLabel").executeUpdate());
     }
 
     @Test

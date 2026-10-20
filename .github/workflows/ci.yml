@@ -74,6 +74,11 @@ jobs:
       - name: Integration tests (Testcontainers)
         run: mvn -B -ntp verify -Pit
 
+      # The dialect is compiled against Hibernate 6.6; run its tests on 6.4 too, the oldest
+      # version it supports, to catch a call that only 6.5+ has.
+      - name: Hibernate 6 dialect on Hibernate 6.4
+        run: mvn -B -ntp verify -Pit,hibernate-6.4 -pl hibernate6 -am
+
   # A release signs and uploads from these same poms. Catch a pom that Central would reject
   # (missing scm/developers/licenses, a javadoc build that dies) here, on every push, rather
   # than discovering it at tag time.

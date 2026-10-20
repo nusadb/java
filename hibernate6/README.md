@@ -1,8 +1,9 @@
 # nusadb-hibernate6: Hibernate ORM 6.x dialect for NusaDB
 
 A thin [Hibernate ORM](https://hibernate.org/) 6.x dialect layered on the
-[`nusadb-jdbc`](../README.md) driver. Built and tested against Hibernate **6.4.4.Final**
-and Java 17.
+[`nusadb-jdbc`](../README.md) driver. Built against Hibernate **6.6** (what Spring Boot 3.4 and 3.5
+ship) and tested on **6.4** and **6.6**, with Java 17. HQL upsert needs Hibernate 6.5 or later;
+everything else works from 6.4.
 
 ## Usage
 
@@ -29,6 +30,31 @@ Besides the standard HQL functions, the dialect renders these the way the server
 arithmetic (`e.at + 1 day`, `(a - b) by day|hour|month|year ...`), `truncate(datetime, month)`,
 `listagg(x, ',') within group (order by ..)`, `local time`, and date/time literals (`{d '..'}`,
 `{ts '..'}`, `local date ..`) as typed SQL literals. `HqlFunctionIT` covers them.
+
+### HQL features
+
+The dialect turns on what the server runs natively, so Hibernate does not emulate it:
+
+- window functions: `row_number()`, `rank()`, `dense_rank()`, `lag()`/`lead()`, `first_value()`,
+  `ntile()`, aggregates `over (partition by .. order by .. rows between ..)`;
+- aggregates: `every()`/`any()`, `stddev*()`, `var*()`, `covar_*()`, `corr()`, `regr_*()`,
+  `median()`, `percentile_cont`/`percentile_disc`/`mode()` and hypothetical `rank(x)`
+  `within group (order by ..)`, `array_agg()`, `count(*) filter (where ..)`, `group by rollup/cube`;
+- functions: `ascii`, `chr`, `initcap`, `overlay`, `insert`, `translate`, `substr`, `md5`,
+  `repeat`, `log`, `log10`, `cbrt`, `pi`, `degrees`/`radians`, `cot`, hyperbolic functions,
+  `bitand`/`bitor`/`bitxor`/`bitnot`, `make_date`/`make_time`/`make_timestamp`, `to_char` formats;
+- arrays: `array(..)`, `array_length`, `array_contains`, `array_position(s)`, `array_append`,
+  `array_concat`, `array_to_string`, slices and element access, and `java.sql.Array` attributes
+  (`element[]` columns);
+- queries: `with` (CTEs, also `recursive` and joined), `join lateral (..)`, `union`/`intersect`/
+  `except` (also inside `in (..)` subqueries), `is distinct from`, `ilike`,
+  `fetch first n rows with ties`, row-value comparisons;
+- `insert ... select` (ids from the entity's sequence) and, on Hibernate 6.5+, upsert:
+  `insert ... on conflict (..) do update set .. / do nothing`;
+- lock options: `jakarta.persistence.lock.timeout` 0 is `FOR UPDATE NOWAIT` and -2 is
+  `FOR UPDATE SKIP LOCKED`; a lock that cannot be taken raises `PessimisticLockException`.
+
+`HqlFunctionIT` and `BulkMutationIT` cover the rendering on the server.
 
 ### Identifiers
 
@@ -83,6 +109,8 @@ integration tests find a server):
 ```bash
 mvn verify -Pit -pl hibernate6 -am
 ```
+
+Add `-Phibernate-6.4` to run the same tests on Hibernate 6.4 instead of 6.6.
 
 `GeneratedIdIT` covers the `IDENTITY`, `SEQUENCE` and `AUTO` strategies and schema validate/update
 over them. `HibernateIT` exercises schema export, persist/load, update, a query with a row limit,
