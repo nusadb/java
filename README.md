@@ -281,6 +281,12 @@ system catalog (not `information_schema`, which the engine scopes to the connect
 so the tree shows all databases as siblings.
 Because NusaDB is engine-per-database, a connection can still only query its own catalog;
 browsing another database opens a new connection.
+`getTypeInfo` lists the column types the server takes, ordered by `DATA_TYPE`;
+`getNumericFunctions`, `getStringFunctions`, `getSystemFunctions` and `getTimeDateFunctions`
+list the `{fn ...}` escapes that run; `getSQLKeywords` lists the server's words beyond SQL:2003.
+`getBestRowIdentifier` is the primary key, and `getTablePrivileges` / `getColumnPrivileges`
+come from `information_schema.table_privileges`. With the Hibernate dialect, a column or table
+named after a word the server reserves (`key`, `index`, `interval`, ...) is quoted for you.
 Primary keys (`getPrimaryKeys`) and indexes (`getIndexInfo`) are likewise answered from
 the `information_schema.table_constraints` / `key_column_usage` / `statistics` views, so a
 tool's schema tree shows PK badges and index lists. `getColumns` reports `COLUMN_SIZE` /

@@ -265,27 +265,27 @@ final class NusaDatabaseMetaData implements DatabaseMetaData {
 
     @Override
     public String getSQLKeywords() {
-        return "";
+        return "analyze,cluster,current_catalog,current_schema,explain,index,key,limit,offset,pivot,replace,returning,top,unpivot,view";
     }
 
     @Override
     public String getNumericFunctions() {
-        return "";
+        return "abs,acos,asin,atan,atan2,ceiling,cos,cot,degrees,exp,floor,log,log10,mod,pi,power,radians,rand,round,sign,sin,sqrt,tan,truncate";
     }
 
     @Override
     public String getStringFunctions() {
-        return "";
+        return "ascii,char,char_length,character_length,concat,insert,lcase,left,length,locate,ltrim,octet_length,position,repeat,replace,right,rtrim,space,substring,ucase";
     }
 
     @Override
     public String getSystemFunctions() {
-        return "";
+        return "database,ifnull,user";
     }
 
     @Override
     public String getTimeDateFunctions() {
-        return "";
+        return "curdate,curtime,current_date,current_time,current_timestamp,dayname,dayofmonth,dayofweek,dayofyear,extract,hour,minute,month,monthname,now,quarter,second,timestampadd,timestampdiff,week,year";
     }
 
     @Override
@@ -451,24 +451,38 @@ final class NusaDatabaseMetaData implements DatabaseMetaData {
             "FIXED_PREC_SCALE", "AUTO_INCREMENT", "LOCAL_TYPE_NAME", "MINIMUM_SCALE",
             "MAXIMUM_SCALE", "SQL_DATA_TYPE", "SQL_DATETIME_SUB", "NUM_PREC_RADIX",
         };
-        String[][] specs = {
-            {"BOOLEAN", Integer.toString(Types.BOOLEAN)},
-            {"INT", Integer.toString(Types.BIGINT)},
-            {"FLOAT", Integer.toString(Types.DOUBLE)},
-            {"NUMERIC", Integer.toString(Types.NUMERIC)},
-            {"TEXT", Integer.toString(Types.VARCHAR)},
-            {"DATE", Integer.toString(Types.DATE)},
-            {"TIME", Integer.toString(Types.TIME)},
-            {"TIMESTAMP", Integer.toString(Types.TIMESTAMP)},
-            {"UUID", Integer.toString(Types.OTHER)},
-            {"JSON", Integer.toString(Types.OTHER)},
+        // The server's column types, ordered by DATA_TYPE as JDBC asks. Its integers are all
+        // 64-bit, so they are listed as BIGINT; bigserial is the auto-increment one.
+        // {name, DATA_TYPE, PRECISION, quoted literal, CREATE_PARAMS, numeric, auto-increment, max scale}
+        Object[][] types = {
+            {"bigint", Types.BIGINT, 19, false, null, true, false, 0},
+            {"bigserial", Types.BIGINT, 19, false, null, true, true, 0},
+            {"bytea", Types.VARBINARY, Integer.MAX_VALUE, true, null, false, false, 0},
+            {"char", Types.CHAR, Integer.MAX_VALUE, true, "length", false, false, 0},
+            {"numeric", Types.NUMERIC, 38, false, "precision,scale", true, false, 38},
+            {"double precision", Types.DOUBLE, 17, false, null, true, false, 0},
+            {"text", Types.VARCHAR, Integer.MAX_VALUE, true, null, false, false, 0},
+            {"varchar", Types.VARCHAR, Integer.MAX_VALUE, true, "length", false, false, 0},
+            {"boolean", Types.BOOLEAN, 1, false, null, false, false, 0},
+            {"date", Types.DATE, 10, true, null, false, false, 0},
+            {"time", Types.TIME, 15, true, null, false, false, 6},
+            {"timestamp", Types.TIMESTAMP, 26, true, null, false, false, 6},
+            {"interval", Types.OTHER, 49, true, null, false, false, 6},
+            {"json", Types.OTHER, Integer.MAX_VALUE, true, null, false, false, 0},
+            {"uuid", Types.OTHER, 36, true, null, false, false, 0},
+            {"timetz", Types.TIME_WITH_TIMEZONE, 21, true, null, false, false, 6},
+            {"timestamptz", Types.TIMESTAMP_WITH_TIMEZONE, 32, true, null, false, false, 6},
         };
         List<String[]> out = new ArrayList<>();
-        for (String[] spec : specs) {
+        for (Object[] t : types) {
+            boolean quoted = (Boolean) t[3];
+            boolean numeric = (Boolean) t[5];
+            boolean text = (Integer) t[1] == Types.VARCHAR || (Integer) t[1] == Types.CHAR;
             out.add(new String[] {
-                spec[0], spec[1], Integer.toString(columnSize(spec[0])), null, null, null,
-                Integer.toString(typeNullable), "true", Integer.toString(typeSearchable), "false",
-                "false", "false", null, "0", "0", null, null, "10",
+                (String) t[0], t[1].toString(), t[2].toString(), quoted ? "'" : null, quoted ? "'" : null,
+                (String) t[4], Integer.toString(typeNullable), Boolean.toString(text),
+                Integer.toString(typeSearchable), Boolean.toString(!numeric), "false", t[6].toString(),
+                null, "0", t[7].toString(), null, null, numeric ? "10" : null,
             });
         }
         return rows(cols, out);
@@ -707,37 +721,114 @@ final class NusaDatabaseMetaData implements DatabaseMetaData {
         });
     }
 
+    /**
+     * The primary key columns: they identify a row for as long as the session lasts. A table
+     * without a primary key has no best row identifier.
+     */
     @Override
     public ResultSet getBestRowIdentifier(String catalog, String schema, String table, int scope,
             boolean nullable) throws SQLException {
+        String[] cols = {
+            "SCOPE", "COLUMN_NAME", "DATA_TYPE", "TYPE_NAME", "COLUMN_SIZE", "BUFFER_LENGTH",
+            "DECIMAL_DIGITS", "PSEUDO_COLUMN",
+        };
+        List<String> keys = new ArrayList<>();
+        try (ResultSet pk = getPrimaryKeys(catalog, schema, table)) {
+            while (pk.next()) {
+                if (schema == null || schema.equals(pk.getString("TABLE_SCHEM"))) {
+                    keys.add(pk.getString("COLUMN_NAME"));
+                }
+            }
+        }
+        List<String[]> out = new ArrayList<>();
+        if (!keys.isEmpty()) {
+            try (ResultSet c = getColumns(catalog, schema, table, null)) {
+                while (c.next()) {
+                    if (table.equals(c.getString("TABLE_NAME")) && keys.contains(c.getString("COLUMN_NAME"))) {
+                        out.add(new String[] {
+                            Integer.toString(bestRowSession), c.getString("COLUMN_NAME"), c.getString("DATA_TYPE"),
+                            c.getString("TYPE_NAME"), c.getString("COLUMN_SIZE"), null, c.getString("DECIMAL_DIGITS"),
+                            Integer.toString(bestRowNotPseudo),
+                        });
+                    }
+                }
+            }
+        }
+        return rows(cols, out);
+    }
+
+    /** No column changes on its own when a row is updated (there is no row version column). */
+    @Override
+    public ResultSet getVersionColumns(String catalog, String schema, String table)
+            throws SQLException {
         return empty(new String[] {
             "SCOPE", "COLUMN_NAME", "DATA_TYPE", "TYPE_NAME", "COLUMN_SIZE", "BUFFER_LENGTH",
             "DECIMAL_DIGITS", "PSEUDO_COLUMN",
         });
     }
 
-    @Override
-    public ResultSet getVersionColumns(String catalog, String schema, String table)
-            throws SQLException {
-        return getBestRowIdentifier(catalog, schema, table, 0, false);
-    }
-
+    /**
+     * The privileges granted on a table's columns. The server grants on whole tables, so every
+     * column carries the table's SELECT, INSERT, UPDATE and REFERENCES grants.
+     */
     @Override
     public ResultSet getColumnPrivileges(String catalog, String schema, String table,
             String columnNamePattern) throws SQLException {
-        return empty(new String[] {
+        String[] cols = {
             "TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "COLUMN_NAME", "GRANTOR", "GRANTEE",
             "PRIVILEGE", "IS_GRANTABLE",
-        });
+        };
+        List<String[]> grants = tableGrants(schema, table, false);
+        List<String[]> out = new ArrayList<>();
+        try (ResultSet c = getColumns(catalog, schema, table, columnNamePattern)) {
+            while (c.next()) {
+                if (table != null && !table.equals(c.getString("TABLE_NAME"))) {
+                    continue;
+                }
+                for (String[] g : grants) {
+                    if (g[2].equals(c.getString("TABLE_NAME")) && g[1].equals(c.getString("TABLE_SCHEM"))
+                            && COLUMN_PRIVILEGES.contains(g[5])) {
+                        out.add(new String[] {g[0], g[1], g[2], c.getString("COLUMN_NAME"), g[3], g[4], g[5], g[6]});
+                    }
+                }
+            }
+        }
+        out.sort(java.util.Comparator.<String[], String>comparing(r -> r[3]).thenComparing(r -> r[6]));
+        return rows(cols, out);
     }
+
+    private static final java.util.Set<String> COLUMN_PRIVILEGES =
+            java.util.Set.of("SELECT", "INSERT", "UPDATE", "REFERENCES");
 
     @Override
     public ResultSet getTablePrivileges(String catalog, String schemaPattern, String tableNamePattern)
             throws SQLException {
-        return empty(new String[] {
+        String[] cols = {
             "TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "GRANTOR", "GRANTEE", "PRIVILEGE",
             "IS_GRANTABLE",
-        });
+        };
+        return rows(cols, tableGrants(schemaPattern, tableNamePattern, true));
+    }
+
+    /**
+     * Rows of {@code information_schema.table_privileges} as {TABLE_CAT, TABLE_SCHEM, TABLE_NAME,
+     * GRANTOR, GRANTEE, PRIVILEGE, IS_GRANTABLE}, ordered as JDBC asks; names are LIKE patterns
+     * when {@code patterns}, else exact.
+     */
+    private List<String[]> tableGrants(String schema, String table, boolean patterns) throws SQLException {
+        List<String[]> out = new ArrayList<>();
+        for (String[] r : query("SELECT table_catalog, table_schema, table_name, grantor, grantee, "
+                + "privilege_type, is_grantable FROM information_schema.table_privileges "
+                + "ORDER BY table_schema, table_name, privilege_type")) {
+            if (schema != null && !(patterns ? likeMatches(schema, r[1]) : schema.equals(r[1]))) {
+                continue;
+            }
+            if (table != null && !(patterns ? likeMatches(table, r[2]) : table.equals(r[2]))) {
+                continue;
+            }
+            out.add(r);
+        }
+        return out;
     }
 
     @Override

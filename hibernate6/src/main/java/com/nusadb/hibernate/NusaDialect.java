@@ -143,7 +143,7 @@ public class NusaDialect extends Dialect {
             builder.setUnquotedCaseStrategy(IdentifierCaseStrategy.LOWER);
             builder.setQuotedCaseStrategy(IdentifierCaseStrategy.MIXED);
         }
-        return super.buildIdentifierHelper(builder, dbMetaData);
+        return new NusaIdentifierHelper(super.buildIdentifierHelper(builder, dbMetaData));
     }
 
     @Override
