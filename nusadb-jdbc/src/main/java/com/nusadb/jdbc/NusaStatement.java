@@ -22,6 +22,8 @@ class NusaStatement implements Statement {
     private final List<String> batch = new ArrayList<>();
     /** JDBC escape syntax ({fn ..}, {d ..}) is translated unless turned off for this statement. */
     private boolean escapeProcessing = true;
+    /** {@link ResultSet#TYPE_FORWARD_ONLY} or {@link ResultSet#TYPE_SCROLL_INSENSITIVE}. */
+    private int resultSetType = ResultSet.TYPE_FORWARD_ONLY;
     private ResultSet current;
     private int updateCount = -1;
     private int fetchSize;
@@ -143,7 +145,7 @@ class NusaStatement implements Statement {
      * read, instead of all at once: whenever a fetch size is set.
      */
     boolean streams() throws SQLException {
-        return fetchSize > 0;
+        return fetchSize > 0 && resultSetType == ResultSet.TYPE_FORWARD_ONLY; // scrolling needs every row
     }
 
     /** A query whose rows are read lazily: its result set, or the update count of a non-query. */
@@ -386,7 +388,25 @@ class NusaStatement implements Statement {
 
     @Override
     public int getResultSetType() {
-        return ResultSet.TYPE_FORWARD_ONLY;
+        return resultSetType;
+    }
+
+    /**
+     * The result set type asked for at creation. A scroll-sensitive result set is not offered:
+     * like other drivers that read the rows to the client, it becomes scroll-insensitive.
+     */
+    void resultSetType(int type) throws SQLException {
+        switch (type) {
+            case ResultSet.TYPE_FORWARD_ONLY:
+            case ResultSet.TYPE_SCROLL_INSENSITIVE:
+                resultSetType = type;
+                break;
+            case ResultSet.TYPE_SCROLL_SENSITIVE:
+                resultSetType = ResultSet.TYPE_SCROLL_INSENSITIVE;
+                break;
+            default:
+                throw new SQLException("nusadb: unknown result set type " + type, "HY024");
+        }
     }
 
     @Override

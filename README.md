@@ -129,6 +129,15 @@ cfg.addDataSourceProperty("password", secret);
 For a server started with `--auth-user USER:PASSWORD`, supply the password; the
 driver runs SCRAM-SHA-256 and verifies the server signature (mutual auth).
 
+### Scrollable result sets
+
+A statement created with `ResultSet.TYPE_SCROLL_INSENSITIVE` returns a result set that moves
+freely: `previous`, `absolute`, `relative`, `first`, `last`, `beforeFirst`, `afterLast` and
+`getRow`. Its rows are read to the client when the query runs (a fetch size does not stream it).
+`TYPE_SCROLL_SENSITIVE` is given as scroll-insensitive. Hibernate's `ScrollableResults` uses this
+for `query.scroll()`. A forward-only result set reports its row numbers and position
+(`getRow`, `isFirst`, `isLast`) but refuses to move back.
+
 ### Statement reuse
 
 Frameworks create a new `PreparedStatement` for every query (Hibernate, `JdbcTemplate`). The
@@ -332,7 +341,7 @@ server does not report the element type. `getString` returns the text form.
 
 ## Not implemented yet
 
-Scrollable/updatable result sets, and `CallableStatement` parameters by name, throw
+Updatable result sets (`CONCUR_UPDATABLE`), and `CallableStatement` parameters by name, throw
 `SQLFeatureNotSupportedException` where called.
 
 ## Timeouts and cancellation

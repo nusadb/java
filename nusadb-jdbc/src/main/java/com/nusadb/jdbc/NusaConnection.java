@@ -444,12 +444,16 @@ final class NusaConnection implements Connection, NusaListener {
 
     @Override
     public Statement createStatement(int rsType, int rsConcurrency) throws SQLException {
-        return createStatement();
+        NusaStatement st = (NusaStatement) createStatement();
+        st.resultSetType(rsType);
+        return st;
     }
 
     @Override
     public PreparedStatement prepareStatement(String sql, int rsType, int rsConcurrency) throws SQLException {
-        return prepareStatement(sql);
+        NusaPreparedStatement ps = (NusaPreparedStatement) prepareStatement(sql);
+        ps.resultSetType(rsType);
+        return ps;
     }
 
     @Override
@@ -459,13 +463,13 @@ final class NusaConnection implements Connection, NusaListener {
 
     @Override
     public Statement createStatement(int rsType, int rsConcurrency, int rsHoldability) throws SQLException {
-        return createStatement();
+        return createStatement(rsType, rsConcurrency);
     }
 
     @Override
     public PreparedStatement prepareStatement(String sql, int rsType, int rsConcurrency, int rsHoldability)
             throws SQLException {
-        return prepareStatement(sql);
+        return prepareStatement(sql, rsType, rsConcurrency);
     }
 
     @Override

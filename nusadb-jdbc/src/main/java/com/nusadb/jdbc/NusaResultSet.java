@@ -37,7 +37,11 @@ final class NusaResultSet extends AbstractResultSet {
     private List<List<byte[]>> rows;
     /** The portal the next chunks come from; null when every row is in {@link #rows}. */
     private final NusaCursor cursor;
+    /** -1 before the first row, {@code rows.size()} after the last. */
     private int rowIndex = -1;
+    /** {@link ResultSet#TYPE_SCROLL_INSENSITIVE}: every row is at hand and the position can move freely. */
+    private final boolean scrollable;
+    private int fetchDirection = FETCH_FORWARD;
     private boolean lastWasNull;
     private boolean closed;
 
@@ -52,6 +56,7 @@ final class NusaResultSet extends AbstractResultSet {
         this.columnTypes = result.columnTypes;
         this.rows = maxRows > 0 && result.rows.size() > maxRows ? result.rows.subList(0, maxRows) : result.rows;
         this.cursor = null;
+        this.scrollable = statement != null && statement.getResultSetType() == TYPE_SCROLL_INSENSITIVE;
     }
 
     /** A result set whose rows are read from {@code stream} one chunk at a time, by {@code cursor}. */
@@ -60,6 +65,7 @@ final class NusaResultSet extends AbstractResultSet {
         this.columns = stream.columns;
         this.columnTypes = stream.columnTypes;
         this.cursor = cursor;
+        this.scrollable = false;
         this.rows = cursor.fetch();
     }
 
@@ -100,12 +106,134 @@ final class NusaResultSet extends AbstractResultSet {
     @Override
     public boolean next() throws SQLException {
         ensureOpen();
-        rowIndex++;
+        if (rowIndex < rows.size()) {
+            rowIndex++;
+        }
         while (rowIndex >= rows.size() && cursor != null && cursor.hasMore()) {
             rows = cursor.fetch(); // the chunk read before is released
             rowIndex = 0;
         }
         return rowIndex < rows.size();
+    }
+
+    // --- scrolling (TYPE_SCROLL_INSENSITIVE) ---
+
+    private void ensureScrollable() throws SQLException {
+        ensureOpen();
+        if (!scrollable) {
+            throw new SQLException("nusadb: the result set is TYPE_FORWARD_ONLY; "
+                    + "create the statement with ResultSet.TYPE_SCROLL_INSENSITIVE to move back", "24000");
+        }
+    }
+
+    /** Moves to the 0-based {@code index}, clamped to just before the first or after the last row. */
+    private boolean moveTo(int index) {
+        rowIndex = Math.max(-1, Math.min(index, rows.size()));
+        return rowIndex >= 0 && rowIndex < rows.size();
+    }
+
+    @Override
+    public boolean previous() throws SQLException {
+        ensureScrollable();
+        return moveTo(rowIndex - 1);
+    }
+
+    @Override
+    public boolean absolute(int row) throws SQLException {
+        ensureScrollable();
+        if (row == 0) {
+            return moveTo(-1);
+        }
+        return moveTo(row > 0 ? row - 1 : rows.size() + row);
+    }
+
+    @Override
+    public boolean relative(int rows) throws SQLException {
+        ensureScrollable();
+        return moveTo(rowIndex + rows);
+    }
+
+    @Override
+    public boolean first() throws SQLException {
+        ensureScrollable();
+        return moveTo(0);
+    }
+
+    @Override
+    public boolean last() throws SQLException {
+        ensureScrollable();
+        return moveTo(rows.size() - 1);
+    }
+
+    @Override
+    public void beforeFirst() throws SQLException {
+        ensureScrollable();
+        moveTo(-1);
+    }
+
+    @Override
+    public void afterLast() throws SQLException {
+        ensureScrollable();
+        moveTo(rows.size());
+    }
+
+    @Override
+    public boolean isBeforeFirst() throws SQLException {
+        ensureOpen();
+        return rowIndex < 0 && (!rows.isEmpty() || cursor != null && cursor.hasMore());
+    }
+
+    @Override
+    public boolean isAfterLast() throws SQLException {
+        ensureOpen();
+        return !rows.isEmpty() && rowIndex >= rows.size() && (cursor == null || !cursor.hasMore());
+    }
+
+    @Override
+    public boolean isFirst() throws SQLException {
+        ensureOpen();
+        return rowIndex == 0 && !rows.isEmpty() && (cursor == null || !cursor.isPastFirstChunk());
+    }
+
+    @Override
+    public boolean isLast() throws SQLException {
+        ensureOpen();
+        return rowIndex >= 0 && rowIndex == rows.size() - 1 && (cursor == null || !cursor.hasMore());
+    }
+
+    /** The 1-based number of the current row; 0 when there is none. Counted over all chunks of a cursor. */
+    @Override
+    public int getRow() throws SQLException {
+        ensureOpen();
+        if (rowIndex < 0 || rowIndex >= rows.size()) {
+            return 0;
+        }
+        return (cursor == null ? 0 : (int) cursor.rowsBefore()) + rowIndex + 1;
+    }
+
+    @Override
+    public int getType() {
+        return scrollable ? TYPE_SCROLL_INSENSITIVE : TYPE_FORWARD_ONLY;
+    }
+
+    @Override
+    public int getConcurrency() {
+        return CONCUR_READ_ONLY;
+    }
+
+    @Override
+    public int getFetchDirection() {
+        return fetchDirection;
+    }
+
+    @Override
+    public void setFetchDirection(int direction) throws SQLException {
+        ensureOpen();
+        if (direction == FETCH_FORWARD || direction == FETCH_UNKNOWN || direction == FETCH_REVERSE && scrollable) {
+            fetchDirection = direction;
+            return;
+        }
+        throw new SQLException("nusadb: fetch direction " + direction + " needs a scrollable result set", "24000");
     }
 
     @Override

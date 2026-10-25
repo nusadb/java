@@ -15,6 +15,9 @@ final class NusaCursor {
     /** Rows the result set may still deliver under {@code maxRows}; -1 for no limit. */
     private long remaining;
     private boolean closed;
+    /** Rows handed out in the chunks before the current one. */
+    private long before;
+    private int current;
 
     NusaCursor(Wire.RowStream stream, int fetchSize, int maxRows) {
         this.stream = stream;
@@ -39,10 +42,21 @@ final class NusaCursor {
         if (remaining > 0) {
             remaining -= rows.size();
         }
+        before += current;
+        current = rows.size();
         if (rows.isEmpty() || remaining == 0) {
             close();
         }
         return rows;
+    }
+
+    /** Rows of the earlier chunks, so a row's number counts from the start of the result. */
+    long rowsBefore() {
+        return before;
+    }
+
+    boolean isPastFirstChunk() {
+        return before > 0;
     }
 
     boolean hasMore() {
