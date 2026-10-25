@@ -127,19 +127,34 @@ cfg.addDataSourceProperty("password", secret);
 For a server started with `--auth-user USER:PASSWORD`, supply the password; the
 driver runs SCRAM-SHA-256 and verifies the server signature (mutual auth).
 
+### JDBC escape syntax
+
+SQL is translated from the JDBC escape syntax before it is sent, as the JDBC specification asks:
+`{d '2026-03-15'}`, `{t '10:20:30'}` and `{ts '...'}` become typed literals, `{fn ...}` the
+server's functions (all the scalar functions of the specification: `ucase`, `concat`, `locate`,
+`dayofweek`, `timestampadd`, `ifnull`, ...), `{oj ...}` an outer join, `{escape '!'}` a LIKE
+escape and `{limit n offset m}` a LIMIT. String literals, quoted names and comments are left
+alone, and `Connection.nativeSQL` shows the result. `Statement.setEscapeProcessing(false)` sends
+the SQL of that statement as written. `{call ...}` is not translated (`CallableStatement` is not
+supported).
+
 ### Batch updates
 
 `Statement.addBatch(String)` / `PreparedStatement.addBatch()` + `executeBatch()` are supported for
 bulk DML (and `DatabaseMetaData.supportsBatchUpdates()` returns `true`). `executeBatch()` returns
-the per-entry update counts. The wire protocol has no batch pipeline, so by default a batch is sent
-as one statement per entry (N round-trips), reusing a single prepared statement.
+the per-entry update counts.
+
+A batch is pipelined: the entries are sent 256 at a time before their replies are read, so a
+batch of thousands of rows takes a few round trips, not one per row. In autocommit mode the whole
+batch runs as one transaction, committed when it ends: if an entry fails, the
+`BatchUpdateException` carries the counts of the entries before it and nothing of the batch is
+kept. Inside a transaction the batch is simply part of it. A batch that asks for generated keys
+(`RETURN_GENERATED_KEYS`) still runs one entry at a time.
 
 With `rewriteBatchedInserts=true`, a batch of a plain single-row `INSERT ... VALUES (...)` is sent
-as multi-row INSERTs instead, as many rows per statement as the parameter limit allows. Over a
-network that is the difference between seconds and milliseconds for a thousand rows. The
-per-row counts are then unknown, so every entry reports `Statement.SUCCESS_NO_INFO` (ORMs accept
-that). Other statements in a batch (UPDATE, INSERT ... SELECT, anything with `RETURNING`) keep
-running row by row.
+as multi-row INSERTs instead, as many rows per statement as the parameter limit allows, which is
+faster still. The per-row counts are then unknown, so every entry reports
+`Statement.SUCCESS_NO_INFO` (ORMs accept that). Other statements keep the pipelined path.
 
 ```java
 try (PreparedStatement ps = conn.prepareStatement("INSERT INTO t VALUES ($1, $2)")) {

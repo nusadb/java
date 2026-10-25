@@ -20,6 +20,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 class NusaStatement implements Statement {
     final NusaConnection connection;
     private final List<String> batch = new ArrayList<>();
+    /** JDBC escape syntax ({fn ..}, {d ..}) is translated unless turned off for this statement. */
+    private boolean escapeProcessing = true;
     private ResultSet current;
     private int updateCount = -1;
     private int fetchSize;
@@ -41,9 +43,9 @@ class NusaStatement implements Statement {
         TIMEOUTS.setRemoveOnCancelPolicy(true);
     }
 
-    /** One round trip to the server. */
-    interface WireCall {
-        Wire.Result call() throws SQLException;
+    /** One exchange with the server: a statement, or a pipelined batch. */
+    interface WireCall<T> {
+        T call() throws SQLException;
     }
 
     /**
@@ -51,7 +53,7 @@ class NusaStatement implements Statement {
      * A statement stopped that way surfaces as {@link SQLTimeoutException}; the connection stays
      * usable, exactly as after any other statement error.
      */
-    Wire.Result run(WireCall call) throws SQLException {
+    <T> T run(WireCall<T> call) throws SQLException {
         int timeout = queryTimeoutSeconds;
         AtomicBoolean fired = new AtomicBoolean();
         ScheduledFuture<?> timer = null;
@@ -204,8 +206,9 @@ class NusaStatement implements Statement {
     }
 
     /** Run a simple-query update, capturing generated keys when the INSERT can carry RETURNING. */
-    private int executeUpdateReturning(String sql, String columns) throws SQLException {
+    private int executeUpdateReturning(String written, String columns) throws SQLException {
         ensureOpen();
+        String sql = escaped(written);
         String augmented = withReturning(sql, columns);
         // Run the augmented INSERT, or the original when it is not an INSERT or already carries its
         // own RETURNING. Either way a result with rows is the generated keys; a bare command tag is a
@@ -220,23 +223,26 @@ class NusaStatement implements Statement {
     }
 
     @Override
-    public ResultSet executeQuery(String sql) throws SQLException {
+    public ResultSet executeQuery(String written) throws SQLException {
         ensureOpen();
+        String sql = escaped(written);
         apply(run(() -> connection.execSimple(sql)));
         return current != null ? current : new NusaResultSet(this, new Wire.Result(
                 Collections.emptyList(), Collections.emptyList(), Collections.emptyList(), null));
     }
 
     @Override
-    public int executeUpdate(String sql) throws SQLException {
+    public int executeUpdate(String written) throws SQLException {
         ensureOpen();
+        String sql = escaped(written);
         apply(run(() -> connection.execSimple(sql)));
         return Math.max(updateCount, 0);
     }
 
     @Override
-    public boolean execute(String sql) throws SQLException {
+    public boolean execute(String written) throws SQLException {
         ensureOpen();
+        String sql = escaped(written);
         apply(run(() -> connection.execSimple(sql)));
         return current != null;
     }
@@ -265,7 +271,12 @@ class NusaStatement implements Statement {
 
     @Override
     public void addBatch(String sql) throws SQLException {
-        batch.add(sql);
+        batch.add(escaped(sql));
+    }
+
+    /** The SQL as sent: escapes translated, unless setEscapeProcessing(false). */
+    private String escaped(String sql) throws SQLException {
+        return escapeProcessing ? JdbcEscapes.translate(sql) : sql;
     }
 
     @Override
@@ -276,14 +287,13 @@ class NusaStatement implements Statement {
     @Override
     public int[] executeBatch() throws SQLException {
         ensureOpen();
-        int[] counts = new int[batch.size()];
-        for (int i = 0; i < batch.size(); i++) {
-            String sql = batch.get(i);
-            Wire.Result r = run(() -> connection.execSimple(sql));
-            counts[i] = Math.max(affected(r.tag), 0);
+        // Pipelined: the queries go out before their replies are read (see Wire#simpleBatch).
+        List<String> queries = new ArrayList<>(batch);
+        try {
+            return run(() -> connection.execSimpleBatch(queries));
+        } finally {
+            batch.clear();
         }
-        batch.clear();
-        return counts;
     }
 
     @Override
@@ -386,7 +396,9 @@ class NusaStatement implements Statement {
 
     @Override
     public void setEscapeProcessing(boolean enable) {
-        // inert
+        // A PreparedStatement's SQL was translated when it was prepared; this affects the SQL
+        // given to execute(String) and addBatch(String).
+        escapeProcessing = enable;
     }
 
     @Override

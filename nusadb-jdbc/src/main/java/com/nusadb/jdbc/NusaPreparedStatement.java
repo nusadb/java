@@ -638,10 +638,13 @@ final class NusaPreparedStatement extends AbstractPreparedStatement {
                 return executeRewritten(rewriter);
             }
         }
+        if (!captureKeys) {
+            return executePipelined();
+        }
         int[] counts = new int[paramBatch.size()];
         for (int i = 0; i < paramBatch.size(); i++) {
             Wire.Result r = connection.execPrepared(statementFor(typeBatch.get(i)), paramBatch.get(i));
-            if (captureKeys && !r.columns.isEmpty()) {
+            if (!r.columns.isEmpty()) {
                 // RETURNING yields one row per affected row; keep the last batch entry's keys.
                 applyGeneratedKeys(r);
                 counts[i] = r.rows.size();
@@ -652,6 +655,25 @@ final class NusaPreparedStatement extends AbstractPreparedStatement {
         paramBatch.clear();
         typeBatch.clear();
         return counts;
+    }
+
+    /**
+     * The batch in a few round trips instead of one per row: every row's Bind and Execute are sent
+     * before the server is waited for (see {@link Wire#executeBatch}). Each row reports its own
+     * update count.
+     */
+    private int[] executePipelined() throws SQLException {
+        List<String> statements = new ArrayList<>(paramBatch.size());
+        for (byte[] tags : typeBatch) {
+            statements.add(statementFor(tags)); // prepares a statement per parameter-type signature
+        }
+        List<List<byte[]>> rows = new ArrayList<>(paramBatch);
+        try {
+            return run(() -> connection.execBatch(statements, rows));
+        } finally {
+            paramBatch.clear();
+            typeBatch.clear();
+        }
     }
 
     private boolean sameWidth(int params) {

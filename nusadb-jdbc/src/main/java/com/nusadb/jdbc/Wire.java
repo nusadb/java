@@ -527,6 +527,117 @@ final class Wire {
         return collect();
     }
 
+    /**
+     * Rows of a batch sent per {@code Sync}. The Bind/Execute pairs of a chunk go out without
+     * waiting, so the server's replies (a few dozen bytes per row) queue up while the client is
+     * still writing; a bounded chunk keeps them well inside the socket buffers.
+     */
+    static final int BATCH_CHUNK = 256;
+
+    /**
+     * Runs a batch pipelined: for each row a Bind of {@code statements[i]} with {@code rows[i]} and
+     * an Execute, then one Sync per {@link #BATCH_CHUNK} rows, then the replies are read. Returns
+     * one update count per row. On an error the server skips the rest of the chunk; a
+     * {@link java.sql.BatchUpdateException} then carries the counts of the rows before it.
+     */
+    synchronized int[] executeBatch(List<String> statements, List<List<byte[]>> rows) throws SQLException {
+        ensureUsable();
+        int total = rows.size();
+        int[] counts = new int[total];
+        for (int start = 0; start < total; start += BATCH_CHUNK) {
+            int end = Math.min(total, start + BATCH_CHUNK);
+            try {
+                for (int i = start; i < end; i++) {
+                    out.write(Protocol.bind("", statements.get(i), rows.get(i)));
+                    out.write(Protocol.execute("", 0));
+                }
+                out.write(Protocol.sync());
+                out.flush();
+            } catch (IOException e) {
+                throw ioError(e);
+            }
+            int done = start;
+            SQLException error = null;
+            try {
+                while (true) {
+                    Protocol.Message msg = Protocol.readMessage(in);
+                    if (msg.type == Protocol.B_COMMAND_COMPLETE) {
+                        if (error == null && done < end) {
+                            counts[done++] = NusaStatement.affected(msg.reader().str());
+                        }
+                    } else if (msg.type == Protocol.B_ERROR) {
+                        if (error == null) {
+                            error = serverError(msg);
+                        }
+                    } else if (msg.type == Protocol.B_NOTIFICATION) {
+                        notifications.addLast(decodeNotification(msg.reader()));
+                    } else if (msg.type == Protocol.B_READY) {
+                        break;
+                    }
+                }
+            } catch (IOException e) {
+                throw ioError(e);
+            }
+            if (error != null) {
+                throw new java.sql.BatchUpdateException("nusadb: batch entry " + done + " failed: " + error.getMessage(),
+                        error.getSQLState(), error.getErrorCode(), java.util.Arrays.copyOf(counts, done), error);
+            }
+        }
+        return counts;
+    }
+
+    /**
+     * Runs a {@code Statement} batch pipelined: up to {@link #BATCH_CHUNK} simple queries go out
+     * before their replies (one ReadyForQuery each) are read. Returns one update count per query;
+     * the first failure is thrown as a {@link java.sql.BatchUpdateException} with the counts of the
+     * queries before it, after every reply of its chunk has been read.
+     */
+    synchronized int[] simpleBatch(List<String> queries) throws SQLException {
+        ensureUsable();
+        int total = queries.size();
+        int[] counts = new int[total];
+        for (int start = 0; start < total; start += BATCH_CHUNK) {
+            int end = Math.min(total, start + BATCH_CHUNK);
+            try {
+                for (int i = start; i < end; i++) {
+                    out.write(Protocol.query(queries.get(i)));
+                }
+                out.flush();
+            } catch (IOException e) {
+                throw ioError(e);
+            }
+            SQLException error = null;
+            int failed = -1;
+            try {
+                int i = start;
+                String tag = null;
+                while (i < end) {
+                    Protocol.Message msg = Protocol.readMessage(in);
+                    if (msg.type == Protocol.B_COMMAND_COMPLETE) {
+                        tag = msg.reader().str();
+                    } else if (msg.type == Protocol.B_ERROR) {
+                        if (error == null) {
+                            error = serverError(msg);
+                            failed = i;
+                        }
+                    } else if (msg.type == Protocol.B_NOTIFICATION) {
+                        notifications.addLast(decodeNotification(msg.reader()));
+                    } else if (msg.type == Protocol.B_READY) {
+                        counts[i++] = NusaStatement.affected(tag);
+                        tag = null;
+                    }
+                }
+            } catch (IOException e) {
+                throw ioError(e);
+            }
+            if (error != null) {
+                throw new java.sql.BatchUpdateException("nusadb: batch entry " + failed + " failed: " + error.getMessage(),
+                        error.getSQLState(), error.getErrorCode(), java.util.Arrays.copyOf(counts, failed), error);
+            }
+        }
+        return counts;
+    }
+
     /** Free a prepared statement on the server ({@code PreparedStatement.close}). */
     synchronized void closeStatement(String statement) throws SQLException {
         if (broken) {
