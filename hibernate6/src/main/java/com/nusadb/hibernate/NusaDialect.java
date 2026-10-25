@@ -28,6 +28,8 @@ import org.hibernate.exception.LockAcquisitionException;
 import org.hibernate.exception.spi.SQLExceptionConversionDelegate;
 import org.hibernate.exception.spi.ViolatedConstraintNameExtractor;
 import org.hibernate.internal.util.JdbcExceptionHelper;
+import org.hibernate.procedure.internal.PostgreSQLCallableStatementSupport;
+import org.hibernate.procedure.spi.CallableStatementSupport;
 import org.hibernate.query.sqm.FetchClauseType;
 import org.hibernate.query.sqm.IntervalType;
 import org.hibernate.query.sqm.TemporalUnit;
@@ -549,6 +551,15 @@ public class NusaDialect extends Dialect {
                 return new NusaSqlAstTranslator<>(sessionFactory, statement);
             }
         };
+    }
+
+    /**
+     * Stored procedures as {@code call p(?)} and functions as {@code select f(?)}, the forms the
+     * server runs. Hibernate's generic {@code {call p(?)}} would reach the driver as a function call.
+     */
+    @Override
+    public CallableStatementSupport getCallableStatementSupport() {
+        return PostgreSQLCallableStatementSupport.INSTANCE;
     }
 
     @Override

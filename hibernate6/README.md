@@ -51,6 +51,8 @@ The dialect turns on what the server runs natively, so Hibernate does not emulat
   `fetch first n rows with ties`, row-value comparisons;
 - `insert ... select` (ids from the entity's sequence) and, on Hibernate 6.5+, upsert:
   `insert ... on conflict (..) do update set .. / do nothing`;
+- stored routines: a JPA `StoredProcedureQuery` runs a procedure as `call p(?)` and a function
+  call as `select f(?)`;
 - lock options: `jakarta.persistence.lock.timeout` 0 is `FOR UPDATE NOWAIT` and -2 is
   `FOR UPDATE SKIP LOCKED`; a lock that cannot be taken raises `PessimisticLockException`.
 
