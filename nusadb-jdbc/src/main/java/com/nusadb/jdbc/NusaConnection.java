@@ -36,6 +36,11 @@ final class NusaConnection implements Connection, NusaListener {
      * type from the text, as drivers did before 0.2.1. By default they are declared {@code TEXT}.
      */
     final boolean untypedStrings;
+
+    /** How {@code prepareCall} runs {@code {call f(..)}} ({@code escapeSyntaxCallMode}). */
+    enum CallMode { SELECT, CALL_IF_NO_RETURN, CALL }
+
+    final CallMode callMode;
     private volatile boolean closed;
     private boolean autoCommit = true;
     private boolean inTransaction;
@@ -44,13 +49,14 @@ final class NusaConnection implements Connection, NusaListener {
     private Integer isolation;
 
     NusaConnection(Wire wire) {
-        this(wire, false, false);
+        this(wire, false, false, CallMode.SELECT);
     }
 
-    NusaConnection(Wire wire, boolean rewriteBatchedInserts, boolean untypedStrings) {
+    NusaConnection(Wire wire, boolean rewriteBatchedInserts, boolean untypedStrings, CallMode callMode) {
         this.wire = wire;
         this.rewriteBatchedInserts = rewriteBatchedInserts;
         this.untypedStrings = untypedStrings;
+        this.callMode = callMode;
     }
 
     /**
@@ -415,7 +421,9 @@ final class NusaConnection implements Connection, NusaListener {
 
     @Override
     public CallableStatement prepareCall(String sql) throws SQLException {
-        throw unsupported();
+        ensureOpen();
+        NusaCallableStatement.Call call = NusaCallableStatement.translate(sql, callMode);
+        return new NusaCallableStatement(this, prepared(call.sql), call.hasReturn);
     }
 
     @Override
@@ -430,7 +438,7 @@ final class NusaConnection implements Connection, NusaListener {
 
     @Override
     public CallableStatement prepareCall(String sql, int rsType, int rsConcurrency) throws SQLException {
-        throw unsupported();
+        return prepareCall(sql);
     }
 
     @Override
@@ -447,7 +455,7 @@ final class NusaConnection implements Connection, NusaListener {
     @Override
     public CallableStatement prepareCall(String sql, int rsType, int rsConcurrency, int rsHoldability)
             throws SQLException {
-        throw unsupported();
+        return prepareCall(sql);
     }
 
     @Override

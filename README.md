@@ -91,6 +91,7 @@ sensitive.
 | `socketTimeout` | `0` | Seconds to wait for any reply. When it runs out the connection is closed (the late reply would leave the stream out of step). Same as `Connection.setNetworkTimeout`. |
 | `rewriteBatchedInserts` | `false` | Send a batch of a single-row `INSERT ... VALUES (...)` as multi-row INSERTs. See [Batch updates](#batch-updates). |
 | `stringType` | `text` | `text`: string parameters are sent as `TEXT`. `unspecified`: the server infers their type from the value, as before 0.2.1. See [Parameter types](#parameter-types). |
+| `escapeSyntaxCallMode` | `select` | How `prepareCall` runs `{call f(..)}`: `select` (`SELECT f(..)`), `callIfNoReturn` (`CALL f(..)` unless it is `{? = call ..}`) or `call`. See [Stored functions and procedures](#stored-functions-and-procedures). |
 | `tls`, `tlsCa`, `tlsDomain`, `tlsInsecure` | off | See [TLS](#tls). |
 
 ### Parameter types
@@ -135,8 +136,25 @@ server's functions (all the scalar functions of the specification: `ucase`, `con
 `dayofweek`, `timestampadd`, `ifnull`, ...), `{oj ...}` an outer join, `{escape '!'}` a LIKE
 escape and `{limit n offset m}` a LIMIT. String literals, quoted names and comments are left
 alone, and `Connection.nativeSQL` shows the result. `Statement.setEscapeProcessing(false)` sends
-the SQL of that statement as written. `{call ...}` is not translated (`CallableStatement` is not
-supported).
+the SQL of that statement as written. `{call ...}` belongs to `prepareCall`, see below.
+
+### Stored functions and procedures
+
+`Connection.prepareCall` returns a `CallableStatement`:
+
+| SQL given | Runs | Parameters |
+|---|---|---|
+| `{? = call f(?, ?)}` | `SELECT f(?, ?)` | 1 is the return value (`registerOutParameter(1, ..)`, then `getInt(1)` and the like); the arguments are 2 and up |
+| `{call f(?, ?)}` | `SELECT f(?, ?) AS result`, read with `executeQuery` | the arguments are 1 and up |
+| `{call p(?)}` with `escapeSyntaxCallMode=callIfNoReturn` or `call` | `CALL p(?)`, for a procedure | as written |
+| anything else (`CALL p(?)`, `SELECT f(?)`) | as written | as written |
+
+When OUT parameters are registered, they are read from the first row of the result (the return
+value first) and `execute()` reports no result set. `getObject` returns the Java type of the
+registered SQL type. Parameters are addressed by index: the server keeps no parameter metadata,
+so names cannot be resolved, and `getProcedureColumns` / `getFunctionColumns` are empty
+(`getProcedures` / `getFunctions` list the routines). Spring's `SimpleJdbcCall` therefore needs
+`withoutProcedureColumnMetaDataAccess()` and declared parameters.
 
 ### Batch updates
 
@@ -290,8 +308,8 @@ server does not report the element type. `getString` returns the text form.
 
 ## Not implemented yet
 
-Scrollable/updatable result sets and `CallableStatement` throw `SQLFeatureNotSupportedException`
-where called.
+Scrollable/updatable result sets, and `CallableStatement` parameters by name, throw
+`SQLFeatureNotSupportedException` where called.
 
 ## Timeouts and cancellation
 

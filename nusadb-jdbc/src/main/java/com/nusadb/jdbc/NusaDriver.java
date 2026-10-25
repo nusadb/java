@@ -104,8 +104,23 @@ public final class NusaDriver implements Driver {
         o.socketTimeoutMillis = seconds(option(params, info, "socketTimeout"), 0, "socketTimeout");
         boolean rewrite = flag(option(params, info, "rewriteBatchedInserts"));
         boolean untypedStrings = untypedStrings(option(params, info, "stringType"));
+        NusaConnection.CallMode callMode = callMode(option(params, info, "escapeSyntaxCallMode"));
         Wire wire = Wire.connect(o);
-        return new NusaConnection(wire, rewrite, untypedStrings);
+        return new NusaConnection(wire, rewrite, untypedStrings, callMode);
+    }
+
+    /** {@code escapeSyntaxCallMode}: {@code select} (the default), {@code callIfNoReturn} or {@code call}. */
+    private static NusaConnection.CallMode callMode(String value) throws SQLException {
+        if (value == null || value.isEmpty() || value.equalsIgnoreCase("select")) {
+            return NusaConnection.CallMode.SELECT;
+        }
+        if (value.equalsIgnoreCase("callIfNoReturn")) {
+            return NusaConnection.CallMode.CALL_IF_NO_RETURN;
+        }
+        if (value.equalsIgnoreCase("call")) {
+            return NusaConnection.CallMode.CALL;
+        }
+        throw new SQLException("nusadb: escapeSyntaxCallMode must be select, callIfNoReturn or call: " + value, "08001");
     }
 
     /** {@code stringType}: {@code text} (the default) or {@code unspecified}. */
@@ -185,6 +200,8 @@ public final class NusaDriver implements Driver {
                     "Send a batch of single-row INSERTs as multi-row INSERTs (update counts become SUCCESS_NO_INFO)."),
             property(info, "stringType", "text",
                     "text: setString parameters are TEXT. unspecified: the server infers their type from the value."),
+            property(info, "escapeSyntaxCallMode", "select",
+                    "How prepareCall runs {call f(..)}: select (SELECT f(..)), callIfNoReturn (CALL unless {? = call}) or call."),
         };
     }
 

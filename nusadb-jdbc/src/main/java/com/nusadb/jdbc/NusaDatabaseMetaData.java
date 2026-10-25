@@ -643,10 +643,33 @@ final class NusaDatabaseMetaData implements DatabaseMetaData {
     @Override
     public ResultSet getProcedures(String catalog, String schemaPattern, String procedureNamePattern)
             throws SQLException {
-        return empty(new String[] {
+        String[] cols = {
             "PROCEDURE_CAT", "PROCEDURE_SCHEM", "PROCEDURE_NAME", "RESERVED1", "RESERVED2",
             "RESERVED3", "REMARKS", "PROCEDURE_TYPE", "SPECIFIC_NAME",
-        });
+        };
+        // Functions and procedures alike, as JDBC lists them here: a function returns a result.
+        List<String[]> out = new ArrayList<>();
+        for (String[] r : routines(schemaPattern, procedureNamePattern)) {
+            int type = "FUNCTION".equalsIgnoreCase(r[3]) ? procedureReturnsResult : procedureNoResult;
+            out.add(new String[] {r[0], r[1], r[2], null, null, null, null, Integer.toString(type), r[2]});
+        }
+        return rows(cols, out);
+    }
+
+    /**
+     * {@code information_schema.routines}: catalog, schema, name and type ({@code FUNCTION} or
+     * {@code PROCEDURE}) of the routines matching the patterns. The server has no view of their
+     * parameters, so getProcedureColumns and getFunctionColumns stay empty.
+     */
+    private List<String[]> routines(String schemaPattern, String namePattern) throws SQLException {
+        List<String[]> out = new ArrayList<>();
+        for (String[] r : query("SELECT routine_catalog, routine_schema, routine_name, routine_type "
+                + "FROM information_schema.routines ORDER BY routine_schema, routine_name")) {
+            if ((schemaPattern == null || likeMatches(schemaPattern, r[1])) && likeMatches(namePattern, r[2])) {
+                out.add(r);
+            }
+        }
+        return out;
     }
 
     @Override
@@ -661,10 +684,17 @@ final class NusaDatabaseMetaData implements DatabaseMetaData {
     @Override
     public ResultSet getFunctions(String catalog, String schemaPattern, String functionNamePattern)
             throws SQLException {
-        return empty(new String[] {
+        String[] cols = {
             "FUNCTION_CAT", "FUNCTION_SCHEM", "FUNCTION_NAME", "REMARKS", "FUNCTION_TYPE",
             "SPECIFIC_NAME",
-        });
+        };
+        List<String[]> out = new ArrayList<>();
+        for (String[] r : routines(schemaPattern, functionNamePattern)) {
+            if ("FUNCTION".equalsIgnoreCase(r[3])) {
+                out.add(new String[] {r[0], r[1], r[2], null, Integer.toString(functionNoTable), r[2]});
+            }
+        }
+        return rows(cols, out);
     }
 
     @Override
@@ -1033,7 +1063,7 @@ final class NusaDatabaseMetaData implements DatabaseMetaData {
 
     @Override
     public boolean supportsStoredProcedures() {
-        return false;
+        return true;
     }
 
     @Override
@@ -1093,7 +1123,7 @@ final class NusaDatabaseMetaData implements DatabaseMetaData {
 
     @Override
     public boolean supportsStoredFunctionsUsingCallSyntax() {
-        return false;
+        return true;
     }
 
     @Override

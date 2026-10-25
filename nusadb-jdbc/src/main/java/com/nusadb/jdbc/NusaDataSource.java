@@ -188,6 +188,15 @@ public class NusaDataSource implements DataSource, Serializable {
         set("stringType", stringType);
     }
 
+    /** {@code select} (the default), {@code callIfNoReturn} or {@code call}; see the driver's option. */
+    public String getEscapeSyntaxCallMode() {
+        return options.getProperty("escapeSyntaxCallMode", "select");
+    }
+
+    public void setEscapeSyntaxCallMode(String mode) {
+        set("escapeSyntaxCallMode", mode);
+    }
+
     private void set(String key, String value) {
         if (value == null) {
             options.remove(key);

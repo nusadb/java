@@ -27,7 +27,7 @@ import java.util.Map;
  * digits than a double holds would lose them. Parse needs the tags before Bind, so the statement is
  * prepared once per distinct combination of types it is executed with (usually one).
  */
-final class NusaPreparedStatement extends AbstractPreparedStatement {
+class NusaPreparedStatement extends AbstractPreparedStatement {
     /** The statement prepared without declared types (at construction, to surface a parse error). */
     private final String name;
     /** Server statements by declared types, for the combinations seen so far. */
@@ -58,9 +58,22 @@ final class NusaPreparedStatement extends AbstractPreparedStatement {
         set(parameterIndex, value, Protocol.TAG_INFER);
     }
 
-    private void set(int parameterIndex, byte[] value, byte tag) throws SQLException {
-        if (parameterIndex < 1) {
+    /**
+     * The statement's parameter number for a JDBC parameter index; 0 for an index the statement has
+     * no parameter for (the return value of a {@code {? = call ..}}). The same here; shifted by
+     * {@link NusaCallableStatement}.
+     */
+    int statementIndex(int jdbcIndex) throws SQLException {
+        return jdbcIndex;
+    }
+
+    private void set(int jdbcIndex, byte[] value, byte tag) throws SQLException {
+        if (jdbcIndex < 1) {
             throw new SQLException("nusadb: parameter index must be >= 1", "07009");
+        }
+        int parameterIndex = statementIndex(jdbcIndex);
+        if (parameterIndex == 0) {
+            return;
         }
         while (params.size() < parameterIndex) {
             params.add(null);
@@ -458,8 +471,9 @@ final class NusaPreparedStatement extends AbstractPreparedStatement {
     public void setObject(int parameterIndex, Object x, int targetSqlType) throws SQLException {
         setObject(parameterIndex, x);
         byte tag = tagFor(targetSqlType);
-        if (x != null && tag != Protocol.TAG_INFER && !(x instanceof byte[]) && !(x instanceof java.sql.Array)) {
-            types.set(parameterIndex - 1, tag == Protocol.TAG_TEXT ? textTag() : tag);
+        int index = statementIndex(parameterIndex);
+        if (index > 0 && x != null && tag != Protocol.TAG_INFER && !(x instanceof byte[]) && !(x instanceof java.sql.Array)) {
+            types.set(index - 1, tag == Protocol.TAG_TEXT ? textTag() : tag);
         }
     }
 
