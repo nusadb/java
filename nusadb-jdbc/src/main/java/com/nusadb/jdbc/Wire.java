@@ -57,6 +57,24 @@ final class Wire {
         int socketTimeoutMillis;
         /** Turn on TCP keep-alive probes so a dead peer is noticed on an idle connection. */
         boolean tcpKeepAlive;
+
+        /** These options for another server (one host of a multi-host URL). */
+        Options at(String host, int port) {
+            Options o = new Options();
+            o.host = host;
+            o.port = port;
+            o.user = user;
+            o.database = database;
+            o.password = password;
+            o.tls = tls;
+            o.tlsCa = tlsCa;
+            o.tlsInsecure = tlsInsecure;
+            o.tlsDomain = tlsDomain;
+            o.connectTimeoutMillis = connectTimeoutMillis;
+            o.socketTimeoutMillis = socketTimeoutMillis;
+            o.tcpKeepAlive = tcpKeepAlive;
+            return o;
+        }
     }
 
     static Wire connect(String host, int port, String user, String database, String password)

@@ -230,12 +230,12 @@ final class NusaDatabaseMetaData implements DatabaseMetaData {
 
     @Override
     public String getURL() {
-        return null;
+        return connection.url;
     }
 
     @Override
     public String getUserName() {
-        return null;
+        return connection.user;
     }
 
     @Override

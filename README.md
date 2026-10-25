@@ -98,7 +98,26 @@ sensitive.
 | `stringType` | `text` | `text`: string parameters are sent as `TEXT`. `unspecified`: the server infers their type from the value, as before 0.2.1. See [Parameter types](#parameter-types). |
 | `preparedStatementCacheQueries` | `256` | Server-side statements kept per connection, by SQL text and parameter types, for later `PreparedStatement`s with the same SQL (`0` = none). See [Statement reuse](#statement-reuse). |
 | `escapeSyntaxCallMode` | `select` | How `prepareCall` runs `{call f(..)}`: `select` (`SELECT f(..)`), `callIfNoReturn` (`CALL f(..)` unless it is `{? = call ..}`) or `call`. See [Stored functions and procedures](#stored-functions-and-procedures). |
+| `targetServerType` | `any` | With several hosts: the role the server must have, `primary`, `secondary`, `preferPrimary` or `preferSecondary`. See [Several hosts](#several-hosts-failover). |
+| `loadBalanceHosts` | `false` | Try the hosts in random order instead of URL order. |
+| `hostRecheckSeconds` | `10` | How long a host found down, or of the wrong role, is tried after the others. |
 | `tls`, `tlsCa`, `tlsDomain`, `tlsInsecure` | off | See [TLS](#tls). |
+
+### Several hosts (failover)
+
+A URL may name several servers, `jdbc:nusadb://db1:5678,db2:5678,[fd00::3]:5678/app`. A connection
+goes to the first one that answers; a host that cannot be reached, or that refuses with "too many
+connections", is skipped, while an error such as a wrong password is reported at once. When every
+host fails the error (SQLState `08001`) names each host and why. A pool keeps working when its
+server goes away: the next connections it opens go to the next host.
+
+`targetServerType=primary` skips a read-only standby (a server started with `--standby-from`),
+`secondary` skips the primary, and `preferPrimary` / `preferSecondary` take the other kind when none
+of the preferred kind is up. The server does not report its role, so the driver tells a standby by
+creating a temporary table in a transaction that it rolls back: a standby refuses it. This costs a
+few round trips per connection, and only with `targetServerType`. What a connection learns about a
+host (down, primary, standby) is remembered for `hostRecheckSeconds`, so later connections try the
+likely hosts first.
 
 ### Parameter types
 

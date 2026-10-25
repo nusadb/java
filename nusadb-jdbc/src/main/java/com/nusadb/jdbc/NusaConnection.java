@@ -51,6 +51,10 @@ final class NusaConnection implements Connection, NusaListener {
     private Integer isolation;
     /** The fetch size every new statement starts with ({@code defaultRowFetchSize}, 0 = all rows at once). */
     int defaultFetchSize;
+    /** The URL the connection was opened with, without a password (DatabaseMetaData.getURL). */
+    String url;
+    /** The user the connection logged in as (DatabaseMetaData.getUserName). */
+    String user;
     /**
      * The {@code ApplicationName} client info. Kept by the driver: the server has no
      * {@code application_name} setting to report it to.

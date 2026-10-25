@@ -74,21 +74,12 @@ public final class NusaDriver implements Driver {
         if (slash >= 0 && slash + 1 < rest.length()) {
             database = rest.substring(slash + 1);
         }
-        int colon = authority.indexOf(':');
-        if (colon >= 0) {
-            host = authority.substring(0, colon);
-            try {
-                port = Integer.parseInt(authority.substring(colon + 1));
-            } catch (NumberFormatException e) {
-                throw new SQLException("nusadb: invalid port in URL", "08001", e);
-            }
-        } else if (!authority.isEmpty()) {
-            host = authority;
-        }
+        // host[:port], or several separated by commas for failover.
+        java.util.List<HostSelector.Host> hosts = HostSelector.parse(authority, host, port);
 
         Wire.Options o = new Wire.Options();
-        o.host = host;
-        o.port = port;
+        o.host = hosts.get(0).name();
+        o.port = hosts.get(0).port();
         o.user = user;
         o.database = database;
         o.password = password;
@@ -111,9 +102,14 @@ public final class NusaDriver implements Driver {
         boolean untypedStrings = untypedStrings(option(params, info, "stringType"));
         NusaConnection.CallMode callMode = callMode(option(params, info, "escapeSyntaxCallMode"));
         int statementCache = count(option(params, info, "preparedStatementCacheQueries"), 256, "preparedStatementCacheQueries");
-        Wire wire = Wire.connect(o);
+        HostSelector.Target target = HostSelector.Target.parse(option(params, info, "targetServerType"));
+        boolean loadBalance = flag(option(params, info, "loadBalanceHosts"));
+        int recheck = count(option(params, info, "hostRecheckSeconds"), 10, "hostRecheckSeconds");
+        Wire wire = HostSelector.connect(hosts, o, target, loadBalance, recheck);
         NusaConnection c = new NusaConnection(wire, rewrite, untypedStrings, callMode, statementCache);
         c.defaultFetchSize = fetchSize;
+        c.url = withoutPassword(url);
+        c.user = user;
         c.applicationName(applicationName);
         if (schema != null && !schema.isBlank()) {
             try {
@@ -124,6 +120,21 @@ public final class NusaDriver implements Driver {
             }
         }
         return c;
+    }
+
+    /** The URL with the password of a {@code user:password@} part left out. */
+    static String withoutPassword(String url) {
+        String rest = url.substring(PREFIX.length());
+        int slash = rest.indexOf('/');
+        int at = rest.lastIndexOf('@', slash >= 0 ? slash : rest.length());
+        if (at < 0) {
+            return url;
+        }
+        int colon = rest.indexOf(':');
+        if (colon < 0 || colon > at) {
+            return url;
+        }
+        return PREFIX + rest.substring(0, colon) + rest.substring(at);
     }
 
     /** A URL query value with its %XX escapes (a comma written as %2C, say) decoded. */
@@ -246,6 +257,11 @@ public final class NusaDriver implements Driver {
             property(info, "defaultRowFetchSize", "0",
                     "Fetch size of every new statement (0 = read all rows at once)."),
             property(info, "ApplicationName", null, "Name of the application, reported by getClientInfo."),
+            property(info, "targetServerType", "any",
+                    "Role the server must have, of the URL's hosts: any, primary, secondary, preferPrimary or preferSecondary."),
+            property(info, "loadBalanceHosts", "false", "Try the URL's hosts in random order instead of URL order."),
+            property(info, "hostRecheckSeconds", "10",
+                    "Seconds a host found down or of the wrong role is tried after the others."),
             property(info, "rewriteBatchedInserts", "false",
                     "Send a batch of single-row INSERTs as multi-row INSERTs (update counts become SUCCESS_NO_INFO)."),
             property(info, "stringType", "text",
