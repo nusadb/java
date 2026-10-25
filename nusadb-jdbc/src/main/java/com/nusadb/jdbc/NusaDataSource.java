@@ -188,6 +188,15 @@ public class NusaDataSource implements DataSource, Serializable {
         set("stringType", stringType);
     }
 
+    /** Server-side statements kept per connection for reuse (default 256, 0 = none). */
+    public int getPreparedStatementCacheQueries() {
+        return Integer.parseInt(options.getProperty("preparedStatementCacheQueries", "256"));
+    }
+
+    public void setPreparedStatementCacheQueries(int count) {
+        set("preparedStatementCacheQueries", Integer.toString(count));
+    }
+
     /** {@code select} (the default), {@code callIfNoReturn} or {@code call}; see the driver's option. */
     public String getEscapeSyntaxCallMode() {
         return options.getProperty("escapeSyntaxCallMode", "select");

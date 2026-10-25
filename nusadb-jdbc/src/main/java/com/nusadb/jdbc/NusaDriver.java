@@ -105,8 +105,25 @@ public final class NusaDriver implements Driver {
         boolean rewrite = flag(option(params, info, "rewriteBatchedInserts"));
         boolean untypedStrings = untypedStrings(option(params, info, "stringType"));
         NusaConnection.CallMode callMode = callMode(option(params, info, "escapeSyntaxCallMode"));
+        int statementCache = count(option(params, info, "preparedStatementCacheQueries"), 256, "preparedStatementCacheQueries");
         Wire wire = Wire.connect(o);
-        return new NusaConnection(wire, rewrite, untypedStrings, callMode);
+        return new NusaConnection(wire, rewrite, untypedStrings, callMode, statementCache);
+    }
+
+    /** A non-negative whole number option, or {@code fallback} when it is not given. */
+    private static int count(String value, int fallback, String name) throws SQLException {
+        if (value == null || value.isEmpty()) {
+            return fallback;
+        }
+        try {
+            int n = Integer.parseInt(value.trim());
+            if (n >= 0) {
+                return n;
+            }
+        } catch (NumberFormatException ignored) {
+            // reported below
+        }
+        throw new SQLException("nusadb: " + name + " must be a whole number >= 0: " + value, "08001");
     }
 
     /** {@code escapeSyntaxCallMode}: {@code select} (the default), {@code callIfNoReturn} or {@code call}. */
@@ -200,6 +217,8 @@ public final class NusaDriver implements Driver {
                     "Send a batch of single-row INSERTs as multi-row INSERTs (update counts become SUCCESS_NO_INFO)."),
             property(info, "stringType", "text",
                     "text: setString parameters are TEXT. unspecified: the server infers their type from the value."),
+            property(info, "preparedStatementCacheQueries", "256",
+                    "Server-side statements kept per connection for reuse by later PreparedStatements (0 = none)."),
             property(info, "escapeSyntaxCallMode", "select",
                     "How prepareCall runs {call f(..)}: select (SELECT f(..)), callIfNoReturn (CALL unless {? = call}) or call."),
         };

@@ -41,6 +41,8 @@ final class NusaConnection implements Connection, NusaListener {
     enum CallMode { SELECT, CALL_IF_NO_RETURN, CALL }
 
     final CallMode callMode;
+    /** Server statements reused by later PreparedStatements with the same SQL. */
+    final StatementCache statements;
     private volatile boolean closed;
     private boolean autoCommit = true;
     private boolean inTransaction;
@@ -49,14 +51,16 @@ final class NusaConnection implements Connection, NusaListener {
     private Integer isolation;
 
     NusaConnection(Wire wire) {
-        this(wire, false, false, CallMode.SELECT);
+        this(wire, false, false, CallMode.SELECT, 256);
     }
 
-    NusaConnection(Wire wire, boolean rewriteBatchedInserts, boolean untypedStrings, CallMode callMode) {
+    NusaConnection(Wire wire, boolean rewriteBatchedInserts, boolean untypedStrings, CallMode callMode,
+            int statementCache) {
         this.wire = wire;
         this.rewriteBatchedInserts = rewriteBatchedInserts;
         this.untypedStrings = untypedStrings;
         this.callMode = callMode;
+        this.statements = new StatementCache(wire, statementCache);
     }
 
     /**

@@ -91,6 +91,7 @@ sensitive.
 | `socketTimeout` | `0` | Seconds to wait for any reply. When it runs out the connection is closed (the late reply would leave the stream out of step). Same as `Connection.setNetworkTimeout`. |
 | `rewriteBatchedInserts` | `false` | Send a batch of a single-row `INSERT ... VALUES (...)` as multi-row INSERTs. See [Batch updates](#batch-updates). |
 | `stringType` | `text` | `text`: string parameters are sent as `TEXT`. `unspecified`: the server infers their type from the value, as before 0.2.1. See [Parameter types](#parameter-types). |
+| `preparedStatementCacheQueries` | `256` | Server-side statements kept per connection, by SQL text and parameter types, for later `PreparedStatement`s with the same SQL (`0` = none). See [Statement reuse](#statement-reuse). |
 | `escapeSyntaxCallMode` | `select` | How `prepareCall` runs `{call f(..)}`: `select` (`SELECT f(..)`), `callIfNoReturn` (`CALL f(..)` unless it is `{? = call ..}`) or `call`. See [Stored functions and procedures](#stored-functions-and-procedures). |
 | `tls`, `tlsCa`, `tlsDomain`, `tlsInsecure` | off | See [TLS](#tls). |
 
@@ -127,6 +128,15 @@ cfg.addDataSourceProperty("password", secret);
 
 For a server started with `--auth-user USER:PASSWORD`, supply the password; the
 driver runs SCRAM-SHA-256 and verifies the server signature (mutual auth).
+
+### Statement reuse
+
+Frameworks create a new `PreparedStatement` for every query (Hibernate, `JdbcTemplate`). The
+driver keeps the server-side statement of each SQL text on the connection, so the next
+`PreparedStatement` with the same SQL needs no new Parse and its `close()` frees nothing on the
+server: a repeated query is a single round trip. Up to `preparedStatementCacheQueries` statements
+(default 256) are kept per connection, the least recently used beyond that are closed. The server
+plans every execution anew, so a kept statement stays right when the table changes under it.
 
 ### Large results (`setFetchSize`)
 

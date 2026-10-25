@@ -28,10 +28,18 @@ import java.util.Map;
  * prepared once per distinct combination of types it is executed with (usually one).
  */
 class NusaPreparedStatement extends AbstractPreparedStatement {
-    /** The statement prepared without declared types (at construction, to surface a parse error). */
+    /**
+     * The statement prepared without declared types (at construction, to surface a parse error).
+     * With the connection's statement cache it is looked up again at each use instead, since the
+     * cache may close it in between.
+     */
     private final String name;
-    /** Server statements by declared types, for the combinations seen so far. */
+    /**
+     * Server statements by declared types, for the combinations seen so far, when the connection
+     * keeps no statement cache; this statement then closes them itself.
+     */
     private final Map<String, String> typed = new HashMap<>();
+    private static final byte[] UNTYPED = new byte[0];
     /** The statement text as prepared ({@code $n} placeholders), kept for batch rewriting. */
     private final String sql;
     private final List<byte[]> params = new ArrayList<>();
@@ -50,7 +58,7 @@ class NusaPreparedStatement extends AbstractPreparedStatement {
             throws SQLException {
         super(connection);
         this.sql = sql;
-        this.name = connection.wire.prepareStatement(sql);
+        this.name = connection.statements.statement(sql, UNTYPED);
         this.captureKeys = captureKeys;
     }
 
@@ -544,7 +552,7 @@ class NusaPreparedStatement extends AbstractPreparedStatement {
             return;
         }
         super.close();
-        if (!connection.isClosed()) {
+        if (!connection.isClosed() && !connection.statements.keeps()) {
             List<String> names = new ArrayList<>(typed.values());
             names.add(name);
             for (String n : names) {
@@ -577,10 +585,14 @@ class NusaPreparedStatement extends AbstractPreparedStatement {
         while (len > 0 && tags[len - 1] == Protocol.TAG_INFER) {
             len--;
         }
+        StatementCache cache = connection.statements;
         if (len == 0) {
-            return name;
+            return cache.keeps() ? cache.statement(sql, UNTYPED) : name;
         }
         byte[] declared = java.util.Arrays.copyOf(tags, len);
+        if (cache.keeps()) {
+            return cache.statement(sql, declared);
+        }
         String key = java.util.Arrays.toString(declared);
         String stmt = typed.get(key);
         if (stmt == null) {
