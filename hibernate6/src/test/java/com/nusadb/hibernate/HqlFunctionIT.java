@@ -103,7 +103,21 @@ class HqlFunctionIT {
                 Arguments.of("{ts} literal", "case when e.at > {ts '2026-01-01 00:00:00'} then 1 else 0 end", 1),
                 Arguments.of("{d} literal", "case when e.day = {d '2026-03-15'} then 1 else 0 end", 1),
                 Arguments.of("current_date", "case when current_date > {d '2020-01-01'} then 1 else 0 end", 1),
-                Arguments.of("local time", "case when local time is not null then 1 else 0 end", 1));
+                Arguments.of("local time", "case when local time is not null then 1 else 0 end", 1),
+                // arrays
+                Arguments.of("array_length", "array_length(array(1, 2, 3))", 3),
+                Arguments.of("array_contains", "array_contains(array(1, 2, 3), 2)", true),
+                Arguments.of("array_position", "array_position(array(5, 6, 7), 6)", 2),
+                Arguments.of("array_position not found", "array_position(array(5, 6, 7), 9)", 0),
+                Arguments.of("array_position from", "array_position(array(1, 2, 1), 1, 2)", 3),
+                Arguments.of("array_concat", "array_to_string(array_concat(array(1, 2), array(3)), ',')", "1,2,3"),
+                Arguments.of("array_append", "array_to_string(array_append(array(1, 2), 3), ',')", "1,2,3"),
+                Arguments.of("array_append string", "array_to_string(array_append(array('a', 'b'), 'c'), ',')", "a,b,c"),
+                Arguments.of("array_append null", "array_length(array_append(array(1, 2), null))", 3),
+                Arguments.of("array_prepend", "array_to_string(array_prepend(0, array(1, 2)), ',')", "0,1,2"),
+                Arguments.of("array_fill", "array_to_string(array_fill('x', 3), ',')", "x,x,x"),
+                Arguments.of("array_get", "array_get(array(5, 6, 7), 2)", 6),
+                Arguments.of("array_to_string", "array_to_string(array('a', 'b'), ',')", "a,b"));
     }
 
     @ParameterizedTest(name = "{0}")

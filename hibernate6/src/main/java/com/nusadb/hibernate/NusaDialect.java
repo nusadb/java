@@ -28,7 +28,6 @@ import org.hibernate.exception.LockAcquisitionException;
 import org.hibernate.exception.spi.SQLExceptionConversionDelegate;
 import org.hibernate.exception.spi.ViolatedConstraintNameExtractor;
 import org.hibernate.internal.util.JdbcExceptionHelper;
-import org.hibernate.procedure.internal.PostgreSQLCallableStatementSupport;
 import org.hibernate.procedure.spi.CallableStatementSupport;
 import org.hibernate.query.sqm.FetchClauseType;
 import org.hibernate.query.sqm.IntervalType;
@@ -226,15 +225,9 @@ public class NusaDialect extends Dialect {
         functions.windowFunctions();
 
         // Arrays: ARRAY[..] constructors and the array_* functions.
-        functions.array_postgresql();
+        NusaArrayFunctions.register(functionContributions);
         functions.arrayAggregate();
-        functions.arrayPosition_postgresql();
-        functions.arrayPositions_postgresql();
         functions.arrayLength_cardinality();
-        functions.arrayConcat_postgresql();
-        functions.arrayPrepend_postgresql();
-        functions.arrayAppend_postgresql();
-        functions.arrayContains_postgresql();
         functions.arrayGet_bracket();
         functions.arraySet_unnest();
         functions.arrayRemove();
@@ -242,8 +235,6 @@ public class NusaDialect extends Dialect {
         functions.arraySlice_operator();
         functions.arrayReplace();
         functions.arrayTrim_trim_array();
-        functions.arrayFill_postgresql();
-        functions.arrayToString_postgresql();
     }
 
     @Override
@@ -559,7 +550,7 @@ public class NusaDialect extends Dialect {
      */
     @Override
     public CallableStatementSupport getCallableStatementSupport() {
-        return PostgreSQLCallableStatementSupport.INSTANCE;
+        return NusaCallableStatementSupport.INSTANCE;
     }
 
     @Override
