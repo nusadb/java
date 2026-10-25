@@ -87,8 +87,13 @@ sensitive.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `connectTimeout` | `10` | Seconds allowed for the TCP connect, TLS handshake and login together. `0` waits forever. `DriverManager.setLoginTimeout` is used when it is set and this is not. |
+| `connectTimeout` | `10` | Seconds allowed for the TCP connect, TLS handshake and login together. `0` waits forever. `loginTimeout`, then `DriverManager.setLoginTimeout`, is used when it is set and this is not. |
+| `loginTimeout` | `0` | Seconds for the same, when `connectTimeout` is not given (`0` = use `DriverManager`'s login timeout, else 10). |
 | `socketTimeout` | `0` | Seconds to wait for any reply. When it runs out the connection is closed (the late reply would leave the stream out of step). Same as `Connection.setNetworkTimeout`. |
+| `tcpKeepAlive` | `false` | Turn on TCP keep-alive probes, so a peer that went away is noticed on an idle connection. |
+| `currentSchema` | | Schema the session's search path is set to after login; a comma-separated list (`%2C` in a URL) sets several. Unqualified names resolve, and tables are created, in the first. `Connection.getSchema` reports the head of the path and `setSchema` replaces it. |
+| `defaultRowFetchSize` | `0` | Fetch size every new statement starts with, so large results are streamed without calling `setFetchSize`. See [Large results](#large-results-setfetchsize). |
+| `ApplicationName` | | Name returned by `Connection.getClientInfo("ApplicationName")`, which `setClientInfo` can change. It is kept by the driver: the server has no setting to show it in. |
 | `rewriteBatchedInserts` | `false` | Send a batch of a single-row `INSERT ... VALUES (...)` as multi-row INSERTs. See [Batch updates](#batch-updates). |
 | `stringType` | `text` | `text`: string parameters are sent as `TEXT`. `unspecified`: the server infers their type from the value, as before 0.2.1. See [Parameter types](#parameter-types). |
 | `preparedStatementCacheQueries` | `256` | Server-side statements kept per connection, by SQL text and parameter types, for later `PreparedStatement`s with the same SQL (`0` = none). See [Statement reuse](#statement-reuse). |

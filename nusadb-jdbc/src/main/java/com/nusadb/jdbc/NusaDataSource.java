@@ -206,6 +206,41 @@ public class NusaDataSource implements DataSource, Serializable {
         set("escapeSyntaxCallMode", mode);
     }
 
+    /** Schema (or comma-separated schemas) the session's search path starts with. */
+    public String getCurrentSchema() {
+        return options.getProperty("currentSchema");
+    }
+
+    public void setCurrentSchema(String schema) {
+        set("currentSchema", schema);
+    }
+
+    /** Fetch size of every new statement (0 = read all rows at once). */
+    public int getDefaultRowFetchSize() {
+        return Integer.parseInt(options.getProperty("defaultRowFetchSize", "0"));
+    }
+
+    public void setDefaultRowFetchSize(int rows) {
+        set("defaultRowFetchSize", Integer.toString(rows));
+    }
+
+    public boolean isTcpKeepAlive() {
+        return Boolean.parseBoolean(options.getProperty("tcpKeepAlive"));
+    }
+
+    public void setTcpKeepAlive(boolean keepAlive) {
+        options.setProperty("tcpKeepAlive", Boolean.toString(keepAlive));
+    }
+
+    /** Name of the application, reported by {@code Connection.getClientInfo("ApplicationName")}. */
+    public String getApplicationName() {
+        return options.getProperty("ApplicationName");
+    }
+
+    public void setApplicationName(String name) {
+        set("ApplicationName", name);
+    }
+
     private void set(String key, String value) {
         if (value == null) {
             options.remove(key);

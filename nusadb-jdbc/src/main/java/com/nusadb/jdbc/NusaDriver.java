@@ -96,18 +96,43 @@ public final class NusaDriver implements Driver {
         o.tlsInsecure = flag(option(params, info, "tlsInsecure"));
         o.tlsCa = option(params, info, "tlsCa");
         o.tlsDomain = option(params, info, "tlsDomain");
-        // connectTimeout bounds TCP connect + TLS + login; DriverManager.setLoginTimeout applies
-        // when it is not given. socketTimeout is the default read timeout (Connection.setNetworkTimeout).
-        int login = DriverManager.getLoginTimeout();
+        // connectTimeout bounds TCP connect + TLS + login; the loginTimeout option, then
+        // DriverManager.setLoginTimeout, apply when it is not given. socketTimeout is the default
+        // read timeout (Connection.setNetworkTimeout).
+        int login = seconds(option(params, info, "loginTimeout"), DriverManager.getLoginTimeout(), "loginTimeout") / 1000;
         o.connectTimeoutMillis = seconds(option(params, info, "connectTimeout"),
                 login > 0 ? login : DEFAULT_CONNECT_TIMEOUT_SECONDS, "connectTimeout");
         o.socketTimeoutMillis = seconds(option(params, info, "socketTimeout"), 0, "socketTimeout");
+        o.tcpKeepAlive = flag(option(params, info, "tcpKeepAlive"));
+        int fetchSize = count(option(params, info, "defaultRowFetchSize"), 0, "defaultRowFetchSize");
+        String schema = option(params, info, "currentSchema");
+        String applicationName = option(params, info, "ApplicationName");
         boolean rewrite = flag(option(params, info, "rewriteBatchedInserts"));
         boolean untypedStrings = untypedStrings(option(params, info, "stringType"));
         NusaConnection.CallMode callMode = callMode(option(params, info, "escapeSyntaxCallMode"));
         int statementCache = count(option(params, info, "preparedStatementCacheQueries"), 256, "preparedStatementCacheQueries");
         Wire wire = Wire.connect(o);
-        return new NusaConnection(wire, rewrite, untypedStrings, callMode, statementCache);
+        NusaConnection c = new NusaConnection(wire, rewrite, untypedStrings, callMode, statementCache);
+        c.defaultFetchSize = fetchSize;
+        c.applicationName(applicationName);
+        if (schema != null && !schema.isBlank()) {
+            try {
+                c.searchPath(decode(schema));
+            } catch (SQLException e) {
+                c.close();
+                throw e;
+            }
+        }
+        return c;
+    }
+
+    /** A URL query value with its %XX escapes (a comma written as %2C, say) decoded. */
+    private static String decode(String value) {
+        try {
+            return java.net.URLDecoder.decode(value.replace("+", "%2B"), java.nio.charset.StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException e) {
+            return value;
+        }
     }
 
     /** A non-negative whole number option, or {@code fallback} when it is not given. */
@@ -212,7 +237,15 @@ public final class NusaDriver implements Driver {
             property(info, "tlsInsecure", "false", "Skip certificate verification (development only)."),
             property(info, "connectTimeout", Integer.toString(DEFAULT_CONNECT_TIMEOUT_SECONDS),
                     "Seconds allowed for TCP connect, TLS and login (0 = no limit)."),
+            property(info, "loginTimeout", "0",
+                    "Seconds allowed to log in when connectTimeout is not given (0 = DriverManager's login timeout)."),
             property(info, "socketTimeout", "0", "Seconds to wait for any reply before the connection is closed (0 = forever)."),
+            property(info, "tcpKeepAlive", "false", "Send TCP keep-alive probes on an idle connection."),
+            property(info, "currentSchema", null,
+                    "Schema (or comma-separated schemas) the session's search path starts with."),
+            property(info, "defaultRowFetchSize", "0",
+                    "Fetch size of every new statement (0 = read all rows at once)."),
+            property(info, "ApplicationName", null, "Name of the application, reported by getClientInfo."),
             property(info, "rewriteBatchedInserts", "false",
                     "Send a batch of single-row INSERTs as multi-row INSERTs (update counts become SUCCESS_NO_INFO)."),
             property(info, "stringType", "text",

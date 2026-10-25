@@ -89,6 +89,7 @@ class NusaStatement implements Statement {
 
     NusaStatement(NusaConnection connection) {
         this.connection = connection;
+        this.fetchSize = connection.defaultFetchSize;
     }
 
     static SQLFeatureNotSupportedException unsupported() {

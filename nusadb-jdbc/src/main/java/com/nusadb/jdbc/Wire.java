@@ -55,6 +55,8 @@ final class Wire {
         int connectTimeoutMillis;
         /** Default read timeout for replies in milliseconds (0 = wait forever). */
         int socketTimeoutMillis;
+        /** Turn on TCP keep-alive probes so a dead peer is noticed on an idle connection. */
+        boolean tcpKeepAlive;
     }
 
     static Wire connect(String host, int port, String user, String database, String password)
@@ -101,6 +103,7 @@ final class Wire {
         try {
             socket.connect(new java.net.InetSocketAddress(o.host, o.port), o.connectTimeoutMillis);
             socket.setTcpNoDelay(true);
+            socket.setKeepAlive(o.tcpKeepAlive);
             if (o.tls) {
                 // Implicit TLS 1.2+: the server (started with --tls-cert) expects the handshake before
                 // any wire frame. Trust the server via `tlsCa` (a PEM CA/self-signed cert), or the JDK

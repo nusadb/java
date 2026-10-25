@@ -49,6 +49,13 @@ final class NusaConnection implements Connection, NusaListener {
     private int savepointSeq;
     /** The isolation last set through {@link #setTransactionIsolation}, or null when never set. */
     private Integer isolation;
+    /** The fetch size every new statement starts with ({@code defaultRowFetchSize}, 0 = all rows at once). */
+    int defaultFetchSize;
+    /**
+     * The {@code ApplicationName} client info. Kept by the driver: the server has no
+     * {@code application_name} setting to report it to.
+     */
+    private volatile String applicationName;
 
     NusaConnection(Wire wire) {
         this(wire, false, false, CallMode.SELECT, 256);
@@ -422,15 +429,41 @@ final class NusaConnection implements Connection, NusaListener {
         return java.sql.ResultSet.HOLD_CURSORS_OVER_COMMIT;
     }
 
+    /** The schema unqualified names resolve to first: the head of the session's search path. */
     @Override
     public String getSchema() throws SQLException {
         ensureOpen();
-        return "public";
+        Wire.Result r = wire.simpleQuery("SELECT current_schema()");
+        byte[] cell = r.rows.isEmpty() || r.rows.get(0).isEmpty() ? null : r.rows.get(0).get(0);
+        return cell == null ? null : new String(cell, java.nio.charset.StandardCharsets.UTF_8);
     }
 
+    /** Makes {@code schema} the whole search path; {@code null} restores the server's default path. */
     @Override
     public void setSchema(String schema) throws SQLException {
         ensureOpen();
+        wire.simpleQuery("SET search_path TO " + (schema == null ? "DEFAULT" : quoteIdentifier(schema)));
+    }
+
+    /**
+     * Sets the search path from the {@code currentSchema} option: a comma-separated list of schema
+     * names, each taken literally unless it is already double-quoted.
+     */
+    void searchPath(String schemas) throws SQLException {
+        StringBuilder sql = new StringBuilder("SET search_path TO ");
+        String sep = "";
+        for (String name : schemas.split(",")) {
+            name = name.trim();
+            if (name.isEmpty()) {
+                continue;
+            }
+            boolean quoted = name.length() > 1 && name.startsWith("\"") && name.endsWith("\"");
+            sql.append(sep).append(quoted ? name : quoteIdentifier(name));
+            sep = ", ";
+        }
+        if (!sep.isEmpty()) {
+            wire.simpleQuery(sql.toString());
+        }
     }
 
     // --- unsupported surface ---
@@ -644,24 +677,65 @@ final class NusaConnection implements Connection, NusaListener {
         throw unsupported();
     }
 
+    /** The one client info property the driver knows. */
+    static final String APPLICATION_NAME = "ApplicationName";
+
+    void applicationName(String name) {
+        applicationName = name;
+    }
+
+    private void clientInfoOpen(Map<String, java.sql.ClientInfoStatus> failed) throws SQLClientInfoException {
+        if (isClosed()) {
+            throw new SQLClientInfoException("nusadb: connection is closed", "08003", 0, failed);
+        }
+    }
+
+    /** Only {@code ApplicationName} is known; any other name is refused. */
     @Override
     public void setClientInfo(String name, String value) throws SQLClientInfoException {
-        throw new SQLClientInfoException();
+        clientInfoOpen(Map.of(name == null ? "" : name, java.sql.ClientInfoStatus.REASON_UNKNOWN));
+        if (!APPLICATION_NAME.equals(name)) {
+            throw new SQLClientInfoException("nusadb: unknown client info property: " + name, "HY000",
+                    Map.of(name == null ? "" : name, java.sql.ClientInfoStatus.REASON_UNKNOWN_PROPERTY));
+        }
+        applicationName = value;
     }
 
+    /**
+     * Replaces the client info with {@code properties}: {@code ApplicationName} is cleared when the
+     * properties leave it out. Nothing is changed when one of them is unknown.
+     */
     @Override
     public void setClientInfo(Properties properties) throws SQLClientInfoException {
-        throw new SQLClientInfoException();
+        Map<String, java.sql.ClientInfoStatus> unknown = new java.util.HashMap<>();
+        for (String name : properties.stringPropertyNames()) {
+            if (!APPLICATION_NAME.equals(name)) {
+                unknown.put(name, java.sql.ClientInfoStatus.REASON_UNKNOWN_PROPERTY);
+            }
+        }
+        clientInfoOpen(unknown);
+        if (!unknown.isEmpty()) {
+            throw new SQLClientInfoException("nusadb: unknown client info properties: " + unknown.keySet(),
+                    "HY000", unknown);
+        }
+        applicationName = properties.getProperty(APPLICATION_NAME);
     }
 
     @Override
-    public String getClientInfo(String name) {
-        return null;
+    public String getClientInfo(String name) throws SQLException {
+        ensureOpen();
+        return APPLICATION_NAME.equals(name) ? applicationName : null;
     }
 
     @Override
-    public Properties getClientInfo() {
-        return new Properties();
+    public Properties getClientInfo() throws SQLException {
+        ensureOpen();
+        Properties p = new Properties();
+        String name = applicationName;
+        if (name != null) {
+            p.setProperty(APPLICATION_NAME, name);
+        }
+        return p;
     }
 
     @Override
