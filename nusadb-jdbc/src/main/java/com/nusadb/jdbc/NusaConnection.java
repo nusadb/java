@@ -104,22 +104,22 @@ final class NusaConnection implements Connection, NusaListener {
      * back if an entry fails, as a batch behaves on other servers; the server would otherwise commit
      * every entry on its own, about a millisecond each.
      */
-    int[] execBatch(List<String> statements, List<List<byte[]>> rows) throws SQLException {
-        return rows.isEmpty() ? new int[0] : batchTransaction(() -> wire.executeBatch(statements, rows));
+    long[] execBatch(List<String> statements, List<List<byte[]>> rows) throws SQLException {
+        return rows.isEmpty() ? new long[0] : batchTransaction(() -> wire.executeBatch(statements, rows));
     }
 
     /** Runs a pipelined {@code Statement} batch, in one transaction as {@link #execBatch}. */
-    int[] execSimpleBatch(List<String> queries) throws SQLException {
-        return queries.isEmpty() ? new int[0] : batchTransaction(() -> wire.simpleBatch(queries));
+    long[] execSimpleBatch(List<String> queries) throws SQLException {
+        return queries.isEmpty() ? new long[0] : batchTransaction(() -> wire.simpleBatch(queries));
     }
 
-    private int[] batchTransaction(NusaStatement.WireCall<int[]> batch) throws SQLException {
+    private long[] batchTransaction(NusaStatement.WireCall<long[]> batch) throws SQLException {
         if (!autoCommit) {
             beginIfNeeded();
             return batch.call();
         }
         wire.simpleQuery("BEGIN");
-        int[] counts;
+        long[] counts;
         try {
             counts = batch.call();
         } catch (SQLException e) {

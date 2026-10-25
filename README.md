@@ -218,6 +218,11 @@ try (PreparedStatement ps = conn.prepareStatement("INSERT INTO t VALUES ($1, $2)
 }
 ```
 
+The JDBC 4.2 `long` variants are there too: `executeLargeUpdate` (also with generated keys),
+`executeLargeBatch`, `getLargeUpdateCount`, `setLargeMaxRows` / `getLargeMaxRows`, and
+`BatchUpdateException.getLargeUpdateCounts()`. The `int` methods give a count past
+`Integer.MAX_VALUE` as `Integer.MAX_VALUE`.
+
 ### Bulk load / export (`COPY`)
 
 For high-throughput load/export, `NusaCopyManager` drives the `COPY` sub-protocol, with one round-trip

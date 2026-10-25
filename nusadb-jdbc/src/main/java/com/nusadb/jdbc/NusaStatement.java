@@ -25,11 +25,11 @@ class NusaStatement implements Statement {
     /** {@link ResultSet#TYPE_FORWARD_ONLY} or {@link ResultSet#TYPE_SCROLL_INSENSITIVE}. */
     private int resultSetType = ResultSet.TYPE_FORWARD_ONLY;
     private ResultSet current;
-    private int updateCount = -1;
+    private long updateCount = -1;
     private int fetchSize;
     private ResultSet generatedKeys;
     private int queryTimeoutSeconds;
-    private int maxRows;
+    private long maxRows;
     /** True while a statement of this object is on the wire, so cancel() knows there is work to stop. */
     private volatile boolean executing;
     boolean closed;
@@ -101,7 +101,8 @@ class NusaStatement implements Statement {
         }
     }
 
-    static int affected(String tag) {
+    /** The row count at the end of a command tag ({@code INSERT 0 5}, {@code UPDATE 3}); 0 when it has none. */
+    static long affected(String tag) {
         if (tag == null) {
             return 0;
         }
@@ -110,7 +111,7 @@ class NusaStatement implements Statement {
             return 0;
         }
         try {
-            return Integer.parseInt(tag.substring(sp + 1));
+            return Long.parseLong(tag.substring(sp + 1));
         } catch (NumberFormatException e) {
             return 0;
         }
@@ -120,7 +121,7 @@ class NusaStatement implements Statement {
         closeCurrent();
         generatedKeys = null;
         if (!result.columns.isEmpty()) {
-            current = new NusaResultSet(this, result, maxRows);
+            current = new NusaResultSet(this, result, narrow(maxRows));
             updateCount = -1;
         } else {
             current = null;
@@ -156,7 +157,7 @@ class NusaStatement implements Statement {
         }
         closeCurrent();
         generatedKeys = null;
-        current = new NusaResultSet(this, stream, new NusaCursor(stream, fetchSize, maxRows));
+        current = new NusaResultSet(this, stream, new NusaCursor(stream, fetchSize, narrow(maxRows)));
         updateCount = -1;
     }
 
@@ -251,7 +252,7 @@ class NusaStatement implements Statement {
     }
 
     /** Run a simple-query update, capturing generated keys when the INSERT can carry RETURNING. */
-    private int executeUpdateReturning(String written, String columns) throws SQLException {
+    private long executeUpdateReturning(String written, String columns) throws SQLException {
         ensureOpen();
         String sql = escaped(written);
         String augmented = withReturning(sql, columns);
@@ -278,8 +279,29 @@ class NusaStatement implements Statement {
                 Collections.emptyList(), Collections.emptyList(), Collections.emptyList(), null));
     }
 
+    /**
+     * A count as an {@code int}: one past {@link Integer#MAX_VALUE} reads as {@code Integer.MAX_VALUE}
+     * (the {@code getLarge..} and {@code executeLarge..} methods give it whole).
+     */
+    static int narrow(long count) {
+        return count > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) count;
+    }
+
+    static int[] narrow(long[] counts) {
+        int[] out = new int[counts.length];
+        for (int i = 0; i < counts.length; i++) {
+            out[i] = narrow(counts[i]);
+        }
+        return out;
+    }
+
     @Override
-    public int executeUpdate(String written) throws SQLException {
+    public int executeUpdate(String sql) throws SQLException {
+        return narrow(executeLargeUpdate(sql));
+    }
+
+    @Override
+    public long executeLargeUpdate(String written) throws SQLException {
         ensureOpen();
         String sql = escaped(written);
         apply(run(() -> connection.execSimple(sql)));
@@ -303,6 +325,11 @@ class NusaStatement implements Statement {
 
     @Override
     public int getUpdateCount() {
+        return narrow(updateCount);
+    }
+
+    @Override
+    public long getLargeUpdateCount() {
         return updateCount;
     }
 
@@ -335,6 +362,11 @@ class NusaStatement implements Statement {
 
     @Override
     public int[] executeBatch() throws SQLException {
+        return narrow(executeLargeBatch());
+    }
+
+    @Override
+    public long[] executeLargeBatch() throws SQLException {
         ensureOpen();
         // Pipelined: the queries go out before their replies are read (see Wire#simpleBatch).
         List<String> queries = new ArrayList<>(batch);
@@ -426,11 +458,21 @@ class NusaStatement implements Statement {
 
     @Override
     public int getMaxRows() {
+        return narrow(maxRows);
+    }
+
+    @Override
+    public long getLargeMaxRows() {
         return maxRows;
     }
 
     @Override
     public void setMaxRows(int max) throws SQLException {
+        setLargeMaxRows(max);
+    }
+
+    @Override
+    public void setLargeMaxRows(long max) throws SQLException {
         if (max < 0) {
             throw new SQLException("nusadb: max rows must be >= 0", "22023");
         }
@@ -509,31 +551,46 @@ class NusaStatement implements Statement {
 
     @Override
     public int executeUpdate(String sql, int autoGeneratedKeys) throws SQLException {
-        ensureOpen();
-        if (autoGeneratedKeys == RETURN_GENERATED_KEYS) {
-            return executeUpdateReturning(sql, "*");
-        }
-        return executeUpdate(sql);
+        return narrow(executeLargeUpdate(sql, autoGeneratedKeys));
     }
 
     @Override
     public int executeUpdate(String sql, int[] columnIndexes) throws SQLException {
+        return narrow(executeLargeUpdate(sql, columnIndexes));
+    }
+
+    @Override
+    public int executeUpdate(String sql, String[] columnNames) throws SQLException {
+        return narrow(executeLargeUpdate(sql, columnNames));
+    }
+
+    @Override
+    public long executeLargeUpdate(String sql, int autoGeneratedKeys) throws SQLException {
+        ensureOpen();
+        if (autoGeneratedKeys == RETURN_GENERATED_KEYS) {
+            return executeUpdateReturning(sql, "*");
+        }
+        return executeLargeUpdate(sql);
+    }
+
+    @Override
+    public long executeLargeUpdate(String sql, int[] columnIndexes) throws SQLException {
         ensureOpen();
         // Column indexes cannot be mapped to names without statement metadata, so return every
         // column (the caller reads the generated keys positionally).
         if (columnIndexes != null && columnIndexes.length > 0) {
             return executeUpdateReturning(sql, "*");
         }
-        return executeUpdate(sql);
+        return executeLargeUpdate(sql);
     }
 
     @Override
-    public int executeUpdate(String sql, String[] columnNames) throws SQLException {
+    public long executeLargeUpdate(String sql, String[] columnNames) throws SQLException {
         ensureOpen();
         if (columnNames != null && columnNames.length > 0) {
             return executeUpdateReturning(sql, String.join(", ", columnNames));
         }
-        return executeUpdate(sql);
+        return executeLargeUpdate(sql);
     }
 
     @Override

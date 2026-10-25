@@ -542,10 +542,10 @@ final class Wire {
      * one update count per row. On an error the server skips the rest of the chunk; a
      * {@link java.sql.BatchUpdateException} then carries the counts of the rows before it.
      */
-    synchronized int[] executeBatch(List<String> statements, List<List<byte[]>> rows) throws SQLException {
+    synchronized long[] executeBatch(List<String> statements, List<List<byte[]>> rows) throws SQLException {
         ensureUsable();
         int total = rows.size();
-        int[] counts = new int[total];
+        long[] counts = new long[total];
         for (int start = 0; start < total; start += BATCH_CHUNK) {
             int end = Math.min(total, start + BATCH_CHUNK);
             try {
@@ -594,10 +594,10 @@ final class Wire {
      * the first failure is thrown as a {@link java.sql.BatchUpdateException} with the counts of the
      * queries before it, after every reply of its chunk has been read.
      */
-    synchronized int[] simpleBatch(List<String> queries) throws SQLException {
+    synchronized long[] simpleBatch(List<String> queries) throws SQLException {
         ensureUsable();
         int total = queries.size();
-        int[] counts = new int[total];
+        long[] counts = new long[total];
         for (int start = 0; start < total; start += BATCH_CHUNK) {
             int end = Math.min(total, start + BATCH_CHUNK);
             try {

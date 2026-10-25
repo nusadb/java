@@ -632,14 +632,19 @@ class NusaPreparedStatement extends AbstractPreparedStatement {
 
     @Override
     public int executeUpdate() throws SQLException {
+        return narrow(executeLargeUpdate());
+    }
+
+    @Override
+    public long executeLargeUpdate() throws SQLException {
         ensureOpen();
         Wire.Result r = execCurrent();
         if (captureKeys && !r.columns.isEmpty()) {
             applyGeneratedKeys(r);
-            return getUpdateCount();
+            return getLargeUpdateCount();
         }
         apply(r);
-        return Math.max(getUpdateCount(), 0);
+        return Math.max(getLargeUpdateCount(), 0);
     }
 
     @Override
@@ -671,7 +676,7 @@ class NusaPreparedStatement extends AbstractPreparedStatement {
     }
 
     @Override
-    public int[] executeBatch() throws SQLException {
+    public long[] executeLargeBatch() throws SQLException {
         ensureOpen();
         if (connection.rewriteBatchedInserts && !captureKeys && paramBatch.size() > 1) {
             InsertRewriter rewriter = InsertRewriter.of(sql);
@@ -682,7 +687,7 @@ class NusaPreparedStatement extends AbstractPreparedStatement {
         if (!captureKeys) {
             return executePipelined();
         }
-        int[] counts = new int[paramBatch.size()];
+        long[] counts = new long[paramBatch.size()];
         for (int i = 0; i < paramBatch.size(); i++) {
             Wire.Result r = connection.execPrepared(statementFor(typeBatch.get(i)), paramBatch.get(i));
             if (!r.columns.isEmpty()) {
@@ -703,7 +708,7 @@ class NusaPreparedStatement extends AbstractPreparedStatement {
      * before the server is waited for (see {@link Wire#executeBatch}). Each row reports its own
      * update count.
      */
-    private int[] executePipelined() throws SQLException {
+    private long[] executePipelined() throws SQLException {
         List<String> statements = new ArrayList<>(paramBatch.size());
         for (byte[] tags : typeBatch) {
             statements.add(statementFor(tags)); // prepares a statement per parameter-type signature
@@ -730,7 +735,7 @@ class NusaPreparedStatement extends AbstractPreparedStatement {
      * The batch as multi-row INSERTs, as many rows per statement as the parameter limit allows.
      * Per-row counts are unknown then, so every entry reports {@link java.sql.Statement#SUCCESS_NO_INFO}.
      */
-    private int[] executeRewritten(InsertRewriter rewriter) throws SQLException {
+    private long[] executeRewritten(InsertRewriter rewriter) throws SQLException {
         int total = paramBatch.size();
         int per = rewriter.rowsPerStatement();
         for (int start = 0; start < total; start += per) {
@@ -756,7 +761,7 @@ class NusaPreparedStatement extends AbstractPreparedStatement {
         }
         paramBatch.clear();
         typeBatch.clear();
-        int[] counts = new int[total];
+        long[] counts = new long[total];
         java.util.Arrays.fill(counts, java.sql.Statement.SUCCESS_NO_INFO);
         return counts;
     }
@@ -806,6 +811,11 @@ class NusaPreparedStatement extends AbstractPreparedStatement {
     @Override
     public int executeUpdate(String sql) throws SQLException {
         throw new SQLException("nusadb: executeUpdate(String) is not allowed on a PreparedStatement", "0A000");
+    }
+
+    @Override
+    public long executeLargeUpdate(String sql) throws SQLException {
+        throw new SQLException("nusadb: executeLargeUpdate(String) is not allowed on a PreparedStatement", "0A000");
     }
 
     @Override
