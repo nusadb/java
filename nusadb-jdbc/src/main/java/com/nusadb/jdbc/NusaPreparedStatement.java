@@ -596,11 +596,23 @@ class NusaPreparedStatement extends AbstractPreparedStatement {
         return run(() -> connection.execPrepared(stmt, values));
     }
 
+    /** Runs the statement with its rows read in chunks; false when it is not to be streamed. */
+    private boolean streamCurrent() throws SQLException {
+        if (captureKeys || !streams()) {
+            return false;
+        }
+        String stmt = statementFor(typeSnapshot());
+        List<byte[]> values = snapshot();
+        applyStream(run(() -> connection.streamPrepared(stmt, values)));
+        return true;
+    }
+
     @Override
     public ResultSet executeQuery() throws SQLException {
         ensureOpen();
-        Wire.Result result = execCurrent();
-        apply(result);
+        if (!streamCurrent()) {
+            apply(execCurrent());
+        }
         ResultSet rs = getResultSet();
         return rs != null ? rs : new NusaResultSet(this, new Wire.Result(
                 Collections.emptyList(), Collections.emptyList(), Collections.emptyList(), null));
@@ -621,6 +633,9 @@ class NusaPreparedStatement extends AbstractPreparedStatement {
     @Override
     public boolean execute() throws SQLException {
         ensureOpen();
+        if (streamCurrent()) {
+            return getResultSet() != null;
+        }
         Wire.Result r = execCurrent();
         if (captureKeys && !r.columns.isEmpty()) {
             applyGeneratedKeys(r);

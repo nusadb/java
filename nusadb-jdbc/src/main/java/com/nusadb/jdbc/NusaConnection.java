@@ -76,6 +76,18 @@ final class NusaConnection implements Connection, NusaListener {
         return wire.simpleQuery(sql);
     }
 
+    /** Starts a simple query whose rows are read lazily, opening a lazy transaction first when needed. */
+    Wire.RowStream streamSimple(String sql) throws SQLException {
+        beginIfNeeded();
+        return wire.streamQuery(sql, !autoCommit);
+    }
+
+    /** Starts a prepared statement whose rows are read lazily, opening a lazy transaction first when needed. */
+    Wire.RowStream streamPrepared(String statement, List<byte[]> params) throws SQLException {
+        beginIfNeeded();
+        return wire.streamPrepared(statement, params, !autoCommit);
+    }
+
     /** Runs a prepared portal, opening a lazy transaction first when needed. */
     Wire.Result execPrepared(String statement, List<byte[]> params) throws SQLException {
         beginIfNeeded();

@@ -75,6 +75,12 @@ final class NusaCallableStatement extends AbstractCallableStatement {
         this.hasReturn = hasReturn;
     }
 
+    /** OUT parameters are read from the whole first row, so a call is never read in chunks. */
+    @Override
+    boolean streams() {
+        return false;
+    }
+
     @Override
     int statementIndex(int jdbcIndex) throws SQLException {
         if (!hasReturn) {

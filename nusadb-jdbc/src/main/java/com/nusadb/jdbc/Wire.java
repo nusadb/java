@@ -342,6 +342,7 @@ final class Wire {
         if (broken) {
             throw new SQLException("nusadb: connection is closed after an earlier I/O error", "08003");
         }
+        settle();
     }
 
     boolean isBroken() {
@@ -367,6 +368,7 @@ final class Wire {
             return false;
         }
         try {
+            settle();
             if (timeoutMillis > 0) {
                 socket.setSoTimeout(timeoutMillis);
             }
@@ -638,11 +640,278 @@ final class Wire {
         return counts;
     }
 
+    // --- A result read from the socket a chunk at a time (Statement.setFetchSize) ---
+
+    /** The result whose rows are still on the socket; null when none is. */
+    private RowStream open;
+
+    /**
+     * A query result read lazily. The server sends the rows of a query (a simple Query, or an
+     * Execute without a row limit) as it produces them, and they are read from the socket as the
+     * result set asks for them; TCP flow control holds the server back meanwhile. An Execute with a
+     * row limit is not used: the server materializes the whole result for it first.
+     *
+     * <p>While a stream is open the connection's socket belongs to it, so any other exchange first
+     * reads the stream's remaining rows into memory ({@link #settle}) and the stream goes on from
+     * there.
+     *
+     * <p>A stream closed before its end is cancelled on the server rather than read to the end.
+     * Inside a transaction a cancelled statement would abort the transaction, so the query runs
+     * after a savepoint of the driver's own: rolling back to it undoes only the cancelled query,
+     * because a stream still on the socket means nothing else ran since. The savepoint is released
+     * when the stream ends; it is left alone once another statement has run in between.
+     */
+    final class RowStream {
+        final List<String> columns;
+        final List<String> columnTypes;
+        private final java.util.ArrayDeque<List<byte[]>> ahead = new java.util.ArrayDeque<>();
+        /** Rows, or the messages that end the result, are still unread on the socket. */
+        private boolean onSocket;
+        private String tag;
+        private SQLException error;
+        /** The driver's savepoint before the query (inside a transaction), or null. */
+        private final String savepoint;
+        /** Another exchange has run since the query started (its rows were read ahead). */
+        private boolean interrupted;
+
+        RowStream(List<String> columns, List<String> columnTypes, boolean onSocket, String savepoint) {
+            this.columns = columns;
+            this.columnTypes = columnTypes;
+            this.onSocket = onSocket;
+            this.savepoint = savepoint;
+        }
+
+        /** Up to {@code n} rows; empty once the result is exhausted. A server error ends it, thrown here. */
+        List<List<byte[]>> next(int n) throws SQLException {
+            synchronized (Wire.this) {
+                List<List<byte[]>> rows = new ArrayList<>(Math.min(n, 4096));
+                while (rows.size() < n && !ahead.isEmpty()) {
+                    rows.add(ahead.poll());
+                }
+                List<byte[]> row;
+                while (rows.size() < n && onSocket && (row = readRow()) != null) {
+                    rows.add(row);
+                }
+                if (rows.isEmpty() && error != null) {
+                    SQLException e = error;
+                    error = null;
+                    throw e;
+                }
+                return rows;
+            }
+        }
+
+        boolean exhausted() {
+            synchronized (Wire.this) {
+                return !onSocket && ahead.isEmpty() && error == null;
+            }
+        }
+
+        /** The command tag, once the result has been read to its end. */
+        String tag() {
+            return tag;
+        }
+
+        /** One row from the socket; null after reading the end of the result up to ReadyForQuery. */
+        private List<byte[]> readRow() throws SQLException {
+            try {
+                while (true) {
+                    Protocol.Message msg = Protocol.readMessage(in);
+                    switch (msg.type) {
+                        case Protocol.B_DATA_ROW:
+                            return msg.reader().fields();
+                        case Protocol.B_COMMAND_COMPLETE:
+                            tag = msg.reader().str();
+                            break;
+                        case Protocol.B_ERROR:
+                            error = serverError(msg);
+                            break;
+                        case Protocol.B_NOTIFICATION:
+                            notifications.addLast(decodeNotification(msg.reader()));
+                            break;
+                        case Protocol.B_READY:
+                            finish();
+                            return null;
+                        default:
+                            break;
+                    }
+                }
+            } catch (IOException e) {
+                finish();
+                throw ioError(e);
+            }
+        }
+
+        private void finish() {
+            onSocket = false;
+            if (open == this) {
+                open = null;
+            }
+            // Ended with nothing run in between and no error: the savepoint surely exists.
+            if (savepoint != null && !interrupted && error == null && !broken) {
+                quietly("RELEASE SAVEPOINT " + savepoint);
+            }
+        }
+
+        /** Reads every row left on the socket into memory, so the connection can serve something else. */
+        void bufferRest() throws SQLException {
+            interrupted = true;
+            List<byte[]> row;
+            while (onSocket && (row = readRow()) != null) {
+                ahead.add(row);
+            }
+        }
+
+        /**
+         * The result set was closed before its end: a query still sending rows is cancelled and
+         * its remaining messages read, and inside a transaction the cancelled query is rolled back
+         * to the driver's savepoint, so the transaction goes on.
+         */
+        void discard() throws SQLException {
+            synchronized (Wire.this) {
+                ahead.clear();
+                if (onSocket) {
+                    try {
+                        cancel();
+                    } catch (SQLException ignored) {
+                        // no cancel key: the rows are read to the end instead
+                    }
+                    while (onSocket) {
+                        readRow();
+                    }
+                    if (savepoint != null && error != null && !interrupted && !broken) {
+                        quietly("ROLLBACK TO SAVEPOINT " + savepoint);
+                        quietly("RELEASE SAVEPOINT " + savepoint);
+                    }
+                }
+                error = null;
+            }
+        }
+    }
+
+    /** Runs a statement of the driver's own, whose failure has nothing to report to. */
+    private void quietly(String sql) {
+        try {
+            send(Protocol.query(sql));
+            collect();
+        } catch (IOException e) {
+            ioError(e);
+        } catch (SQLException ignored) {
+            // e.g. the savepoint is gone with a transaction that ended
+        }
+    }
+
+    /** Before another exchange: the open stream's remaining rows are read into memory. */
+    private void settle() throws SQLException {
+        RowStream stream = open;
+        if (stream != null) {
+            stream.bufferRest();
+            open = null;
+        }
+    }
+
+    /**
+     * A simple query whose rows are read as the result set asks for them (see {@link RowStream}).
+     * {@code inTransaction}: a savepoint is set first, in the same round trip.
+     */
+    synchronized RowStream streamQuery(String sql, boolean inTransaction) throws SQLException {
+        ensureUsable();
+        String savepoint = inTransaction ? "nusa_stream_" + (++counter) : null;
+        try {
+            if (savepoint != null) {
+                out.write(Protocol.query("SAVEPOINT " + savepoint));
+            }
+            out.write(Protocol.query(sql));
+            out.flush();
+        } catch (IOException e) {
+            throw ioError(e);
+        }
+        return startStream(savepoint);
+    }
+
+    /** A prepared statement run without a row limit, its rows read as the result set asks for them. */
+    synchronized RowStream streamPrepared(String statement, List<byte[]> params, boolean inTransaction) throws SQLException {
+        ensureUsable();
+        String savepoint = inTransaction ? "nusa_stream_" + (++counter) : null;
+        try {
+            if (savepoint != null) {
+                out.write(Protocol.query("SAVEPOINT " + savepoint));
+            }
+            out.write(Protocol.bind("", statement, params));
+            out.write(Protocol.describePortal(""));
+            out.write(Protocol.execute("", 0));
+            out.write(Protocol.sync());
+            out.flush();
+        } catch (IOException e) {
+            throw ioError(e);
+        }
+        return startStream(savepoint);
+    }
+
+    /**
+     * Reads up to the row description: an open stream of the rows, or for a statement without rows
+     * (or one that failed before any) the finished result.
+     */
+    private RowStream startStream(String savepoint) throws SQLException {
+        if (savepoint != null) {
+            collect(); // the savepoint's own reply
+        }
+        String tag = null;
+        SQLException error = null;
+        try {
+            while (true) {
+                Protocol.Message msg = Protocol.readMessage(in);
+                Protocol.Reader r = msg.reader();
+                switch (msg.type) {
+                    case Protocol.B_ROW_DESCRIPTION:
+                    case Protocol.B_ROW_DESCRIPTION_TYPED: {
+                        boolean typed = msg.type == Protocol.B_ROW_DESCRIPTION_TYPED;
+                        int n = r.u16();
+                        List<String> columns = new ArrayList<>(n);
+                        List<String> types = new ArrayList<>(n);
+                        for (int i = 0; i < n; i++) {
+                            columns.add(r.str());
+                            types.add(typed ? Protocol.typeName(r.u8()) : null);
+                        }
+                        RowStream stream = new RowStream(columns, types, true, savepoint);
+                        open = stream;
+                        return stream;
+                    }
+                    case Protocol.B_COMMAND_COMPLETE:
+                        tag = r.str();
+                        break;
+                    case Protocol.B_ERROR:
+                        error = serverError(msg);
+                        break;
+                    case Protocol.B_NOTIFICATION:
+                        notifications.addLast(decodeNotification(r));
+                        break;
+                    case Protocol.B_READY: {
+                        if (error != null) {
+                            throw error;
+                        }
+                        if (savepoint != null) {
+                            quietly("RELEASE SAVEPOINT " + savepoint);
+                        }
+                        RowStream done = new RowStream(new ArrayList<>(), new ArrayList<>(), false, null);
+                        done.tag = tag;
+                        return done;
+                    }
+                    default:
+                        break;
+                }
+            }
+        } catch (IOException e) {
+            throw ioError(e);
+        }
+    }
+
     /** Free a prepared statement on the server ({@code PreparedStatement.close}). */
     synchronized void closeStatement(String statement) throws SQLException {
         if (broken) {
             return; // the server-side session is gone with the socket
         }
+        settle();
         try {
             send(Protocol.close(Protocol.TARGET_STATEMENT, statement));
             send(Protocol.sync());

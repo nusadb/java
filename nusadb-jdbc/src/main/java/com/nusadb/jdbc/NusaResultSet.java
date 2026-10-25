@@ -25,12 +25,18 @@ import java.util.Calendar;
 import java.util.List;
 import java.util.UUID;
 
-/** A forward-only, read-only {@link java.sql.ResultSet} over a collected {@link Wire.Result}. */
+/**
+ * A forward-only, read-only {@link java.sql.ResultSet} over a collected {@link Wire.Result}, or
+ * over an open portal read one chunk at a time ({@link NusaCursor}).
+ */
 final class NusaResultSet extends AbstractResultSet {
     private final NusaStatement statement;
     private final List<String> columns;
     private final List<String> columnTypes;
-    private final List<List<byte[]>> rows;
+    /** The rows at hand: the whole result, or the current chunk of a cursor. */
+    private List<List<byte[]>> rows;
+    /** The portal the next chunks come from; null when every row is in {@link #rows}. */
+    private final NusaCursor cursor;
     private int rowIndex = -1;
     private boolean lastWasNull;
     private boolean closed;
@@ -45,6 +51,16 @@ final class NusaResultSet extends AbstractResultSet {
         this.columns = result.columns;
         this.columnTypes = result.columnTypes;
         this.rows = maxRows > 0 && result.rows.size() > maxRows ? result.rows.subList(0, maxRows) : result.rows;
+        this.cursor = null;
+    }
+
+    /** A result set whose rows are read from {@code stream} one chunk at a time, by {@code cursor}. */
+    NusaResultSet(NusaStatement statement, Wire.RowStream stream, NusaCursor cursor) throws SQLException {
+        this.statement = statement;
+        this.columns = stream.columns;
+        this.columnTypes = stream.columnTypes;
+        this.cursor = cursor;
+        this.rows = cursor.fetch();
     }
 
     private void ensureOpen() throws SQLException {
@@ -85,12 +101,34 @@ final class NusaResultSet extends AbstractResultSet {
     public boolean next() throws SQLException {
         ensureOpen();
         rowIndex++;
+        while (rowIndex >= rows.size() && cursor != null && cursor.hasMore()) {
+            rows = cursor.fetch(); // the chunk read before is released
+            rowIndex = 0;
+        }
         return rowIndex < rows.size();
     }
 
     @Override
     public void close() {
         closed = true;
+        if (cursor != null) {
+            cursor.close();
+        }
+    }
+
+    @Override
+    public int getFetchSize() {
+        return cursor != null ? cursor.getFetchSize() : 0;
+    }
+
+    @Override
+    public void setFetchSize(int rows) throws SQLException {
+        if (rows < 0) {
+            throw new SQLException("nusadb: fetch size must be >= 0", "22023");
+        }
+        if (cursor != null) {
+            cursor.setFetchSize(rows);
+        }
     }
 
     @Override

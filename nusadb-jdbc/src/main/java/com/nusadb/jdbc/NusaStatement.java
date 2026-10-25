@@ -115,6 +115,7 @@ class NusaStatement implements Statement {
     }
 
     void apply(Wire.Result result) {
+        closeCurrent();
         generatedKeys = null;
         if (!result.columns.isEmpty()) {
             current = new NusaResultSet(this, result, maxRows);
@@ -123,6 +124,48 @@ class NusaStatement implements Statement {
             current = null;
             updateCount = affected(result.tag);
         }
+    }
+
+    /** A new execution closes the result set of the one before, freeing an open portal. */
+    private void closeCurrent() {
+        if (current != null) {
+            try {
+                current.close();
+            } catch (SQLException ignored) {
+                // a cursor's close swallows its own failures; nothing else can fail here
+            }
+            current = null;
+        }
+    }
+
+    /**
+     * Whether a query's rows are read in chunks of {@link #getFetchSize()} as the result set is
+     * read, instead of all at once: whenever a fetch size is set.
+     */
+    boolean streams() throws SQLException {
+        return fetchSize > 0;
+    }
+
+    /** A query whose rows are read lazily: its result set, or the update count of a non-query. */
+    void applyStream(Wire.RowStream stream) throws SQLException {
+        if (stream.columns.isEmpty()) {
+            apply(new Wire.Result(Collections.emptyList(), Collections.emptyList(), Collections.emptyList(), stream.tag()));
+            return;
+        }
+        closeCurrent();
+        generatedKeys = null;
+        current = new NusaResultSet(this, stream, new NusaCursor(stream, fetchSize, maxRows));
+        updateCount = -1;
+    }
+
+    /** Runs a query whose rows are read in chunks; false when it is not to be streamed. */
+    private boolean streamQuery(String sql) throws SQLException {
+        if (!streams()) {
+            return false;
+        }
+        closeCurrent();
+        applyStream(run(() -> connection.streamSimple(sql)));
+        return true;
     }
 
     /**
@@ -226,7 +269,9 @@ class NusaStatement implements Statement {
     public ResultSet executeQuery(String written) throws SQLException {
         ensureOpen();
         String sql = escaped(written);
-        apply(run(() -> connection.execSimple(sql)));
+        if (!streamQuery(sql)) {
+            apply(run(() -> connection.execSimple(sql)));
+        }
         return current != null ? current : new NusaResultSet(this, new Wire.Result(
                 Collections.emptyList(), Collections.emptyList(), Collections.emptyList(), null));
     }
@@ -243,7 +288,9 @@ class NusaStatement implements Statement {
     public boolean execute(String written) throws SQLException {
         ensureOpen();
         String sql = escaped(written);
-        apply(run(() -> connection.execSimple(sql)));
+        if (!streamQuery(sql)) {
+            apply(run(() -> connection.execSimple(sql)));
+        }
         return current != null;
     }
 
@@ -299,7 +346,7 @@ class NusaStatement implements Statement {
     @Override
     public void close() {
         closed = true;
-        current = null;
+        closeCurrent();
     }
 
     @Override

@@ -128,6 +128,20 @@ cfg.addDataSourceProperty("password", secret);
 For a server started with `--auth-user USER:PASSWORD`, supply the password; the
 driver runs SCRAM-SHA-256 and verifies the server signature (mutual auth).
 
+### Large results (`setFetchSize`)
+
+With a fetch size (`Statement.setFetchSize`, Spring's `JdbcTemplate.setFetchSize`, Hibernate's
+`hibernate.jdbc.fetch_size` or a JPA fetch-size hint) the rows of a query are read from the server
+as the result set reaches them, that many at a time, instead of all at once: the first row of a
+large result arrives at once and memory stays at about one chunk. This works in autocommit as
+well as inside a transaction. Without a fetch size every row is read when the query runs.
+
+While such a result set is open the connection can still run other statements; the result's
+remaining rows are then read into memory first. A result set closed before its last row (for
+example a `Stream` that is only partly consumed) cancels the query on the server. Inside a
+transaction the driver sets a savepoint of its own before a streamed query, so cancelling it does
+not abort the transaction; the savepoint is released when the result ends.
+
 ### JDBC escape syntax
 
 SQL is translated from the JDBC escape syntax before it is sent, as the JDBC specification asks:
