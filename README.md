@@ -132,6 +132,10 @@ As with other drivers, a string is then not silently read as a number: `WHERE in
 `setString(1, "5")` is a type error. Bind numbers with the numeric setters, or set
 `stringType=unspecified` to have string parameters typed by the server from their text again.
 
+The server takes only a literal after `LIKE .. ESCAPE`. A statement that binds it instead
+(`like ? escape ?`, as Hibernate 5 criteria and Spring Data's derived queries on it do) still runs:
+the driver writes the escape value into the statement as a quoted literal.
+
 ### DataSource
 
 Pools and containers configured with a data source class rather than a URL can use

@@ -49,6 +49,8 @@ class NusaPreparedStatement extends AbstractPreparedStatement {
     // When true the statement was prepared with a RETURNING clause (RETURN_GENERATED_KEYS), so its
     // result rows are captured as generated keys rather than reported as a normal ResultSet.
     private final boolean captureKeys;
+    /** The {@code ESCAPE $n} parameters written in as literals when the statement runs, or null. */
+    private final EscapeParameters escapes;
 
     NusaPreparedStatement(NusaConnection connection, String sql) throws SQLException {
         this(connection, sql, false);
@@ -58,7 +60,9 @@ class NusaPreparedStatement extends AbstractPreparedStatement {
             throws SQLException {
         super(connection);
         this.sql = sql;
-        this.name = connection.statements.statement(sql, UNTYPED);
+        this.escapes = EscapeParameters.of(sql);
+        // With escape parameters the server statement is prepared per escape value, when it runs.
+        this.name = escapes == null ? connection.statements.statement(sql, UNTYPED) : null;
         this.captureKeys = captureKeys;
     }
 
@@ -574,7 +578,9 @@ class NusaPreparedStatement extends AbstractPreparedStatement {
         super.close();
         if (!connection.isClosed() && !connection.statements.keeps()) {
             List<String> names = new ArrayList<>(typed.values());
-            names.add(name);
+            if (name != null) {
+                names.add(name);
+            }
             for (String n : names) {
                 try {
                     connection.wire.closeStatement(n);
@@ -599,33 +605,43 @@ class NusaPreparedStatement extends AbstractPreparedStatement {
         return t;
     }
 
-    /** The server statement declaring {@code tags}: the untyped one when nothing is declared. */
-    private String statementFor(byte[] tags) throws SQLException {
+    /** A server statement and the values to run it with. */
+    private record Bound(String statement, List<byte[]> values) {}
+
+    /** The statement for these parameter values, with any escape parameter written in. */
+    private Bound bind(byte[] tags, List<byte[]> values) throws SQLException {
+        if (escapes == null) {
+            return new Bound(statementFor(sql, tags), values);
+        }
+        return new Bound(statementFor(escapes.sql(values), escapes.tags(tags)), escapes.values(values));
+    }
+
+    /** The server statement for {@code text} declaring {@code tags}: the untyped one when nothing is declared. */
+    private String statementFor(String text, byte[] tags) throws SQLException {
         int len = tags.length;
         while (len > 0 && tags[len - 1] == Protocol.TAG_INFER) {
             len--;
         }
         StatementCache cache = connection.statements;
-        if (len == 0) {
-            return cache.keeps() ? cache.statement(sql, UNTYPED) : name;
-        }
         byte[] declared = java.util.Arrays.copyOf(tags, len);
         if (cache.keeps()) {
-            return cache.statement(sql, declared);
+            return cache.statement(text, len == 0 ? UNTYPED : declared);
         }
-        String key = java.util.Arrays.toString(declared);
+        if (len == 0 && name != null) {
+            return name;
+        }
+        String key = (escapes == null ? "" : text) + java.util.Arrays.toString(declared);
         String stmt = typed.get(key);
         if (stmt == null) {
-            stmt = connection.wire.prepareStatement(sql, declared);
+            stmt = connection.wire.prepareStatement(text, declared);
             typed.put(key, stmt);
         }
         return stmt;
     }
 
     private Wire.Result execCurrent() throws SQLException {
-        String stmt = statementFor(typeSnapshot());
-        List<byte[]> values = snapshot();
-        return run(() -> connection.execPrepared(stmt, values));
+        Bound b = bind(typeSnapshot(), snapshot());
+        return run(() -> connection.execPrepared(b.statement(), b.values()));
     }
 
     /** Runs the statement with its rows read in chunks; false when it is not to be streamed. */
@@ -633,9 +649,8 @@ class NusaPreparedStatement extends AbstractPreparedStatement {
         if (captureKeys || !streams()) {
             return false;
         }
-        String stmt = statementFor(typeSnapshot());
-        List<byte[]> values = snapshot();
-        applyStream(run(() -> connection.streamPrepared(stmt, values)));
+        Bound b = bind(typeSnapshot(), snapshot());
+        applyStream(run(() -> connection.streamPrepared(b.statement(), b.values())));
         return true;
     }
 
@@ -698,7 +713,7 @@ class NusaPreparedStatement extends AbstractPreparedStatement {
     @Override
     public long[] executeLargeBatch() throws SQLException {
         ensureOpen();
-        if (connection.rewriteBatchedInserts && !captureKeys && paramBatch.size() > 1) {
+        if (connection.rewriteBatchedInserts && !captureKeys && escapes == null && paramBatch.size() > 1) {
             InsertRewriter rewriter = InsertRewriter.of(sql);
             if (rewriter != null && sameWidth(rewriter.paramsPerRow())) {
                 return executeRewritten(rewriter);
@@ -709,7 +724,8 @@ class NusaPreparedStatement extends AbstractPreparedStatement {
         }
         long[] counts = new long[paramBatch.size()];
         for (int i = 0; i < paramBatch.size(); i++) {
-            Wire.Result r = connection.execPrepared(statementFor(typeBatch.get(i)), paramBatch.get(i));
+            Bound b = bind(typeBatch.get(i), paramBatch.get(i));
+            Wire.Result r = connection.execPrepared(b.statement(), b.values());
             if (!r.columns.isEmpty()) {
                 // RETURNING yields one row per affected row; keep the last batch entry's keys.
                 applyGeneratedKeys(r);
@@ -730,10 +746,12 @@ class NusaPreparedStatement extends AbstractPreparedStatement {
      */
     private long[] executePipelined() throws SQLException {
         List<String> statements = new ArrayList<>(paramBatch.size());
-        for (byte[] tags : typeBatch) {
-            statements.add(statementFor(tags)); // prepares a statement per parameter-type signature
+        List<List<byte[]>> rows = new ArrayList<>(paramBatch.size());
+        for (int i = 0; i < typeBatch.size(); i++) {
+            Bound b = bind(typeBatch.get(i), paramBatch.get(i)); // a statement per parameter-type signature
+            statements.add(b.statement());
+            rows.add(b.values());
         }
-        List<List<byte[]>> rows = new ArrayList<>(paramBatch);
         try {
             return run(() -> connection.execBatch(statements, rows));
         } finally {
