@@ -680,7 +680,8 @@ final class NusaConnection implements Connection, NusaListener {
 
     @Override
     public SQLXML createSQLXML() throws SQLException {
-        throw unsupported();
+        ensureOpen();
+        return new NusaSQLXML();
     }
 
     /** The one client info property the driver knows. */

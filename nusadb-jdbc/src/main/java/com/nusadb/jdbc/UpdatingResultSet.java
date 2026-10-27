@@ -98,6 +98,7 @@ abstract class UpdatingResultSet extends AbstractResultSet {
     @Override public void updateObject(int i, Object x, SQLType t) throws SQLException { set(i, lob(x)); }
     @Override public void updateObject(int i, Object x, SQLType t, int scaleOrLength) throws SQLException { set(i, lob(x)); }
     @Override public void updateArray(int i, Array x) throws SQLException { set(i, x); }
+    @Override public void updateSQLXML(int i, java.sql.SQLXML x) throws SQLException { set(i, x); }
     @Override public void updateBlob(int i, Blob x) throws SQLException { set(i, lob(x)); }
     @Override public void updateClob(int i, Clob x) throws SQLException { set(i, lob(x)); }
     @Override public void updateNClob(int i, NClob x) throws SQLException { set(i, lob(x)); }
@@ -141,6 +142,7 @@ abstract class UpdatingResultSet extends AbstractResultSet {
     @Override public void updateObject(String c, Object x, SQLType t) throws SQLException { updateObject(findColumn(c), x, t); }
     @Override public void updateObject(String c, Object x, SQLType t, int s) throws SQLException { updateObject(findColumn(c), x, t, s); }
     @Override public void updateArray(String c, Array x) throws SQLException { updateArray(findColumn(c), x); }
+    @Override public void updateSQLXML(String c, java.sql.SQLXML x) throws SQLException { updateSQLXML(findColumn(c), x); }
     @Override public void updateBlob(String c, Blob x) throws SQLException { updateBlob(findColumn(c), x); }
     @Override public void updateClob(String c, Clob x) throws SQLException { updateClob(findColumn(c), x); }
     @Override public void updateNClob(String c, NClob x) throws SQLException { updateNClob(findColumn(c), x); }

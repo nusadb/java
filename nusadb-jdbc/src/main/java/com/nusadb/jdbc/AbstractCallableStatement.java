@@ -62,7 +62,10 @@ abstract class AbstractCallableStatement extends NusaPreparedStatement implement
     @Override public java.sql.RowId getRowId(String a) throws SQLException { throw unsupported(); }
     @Override public java.sql.RowId getRowId(int a) throws SQLException { throw unsupported(); }
     @Override public java.sql.SQLXML getSQLXML(String a) throws SQLException { throw unsupported(); }
-    @Override public java.sql.SQLXML getSQLXML(int a) throws SQLException { throw unsupported(); }
+    @Override public java.sql.SQLXML getSQLXML(int a) throws SQLException {
+        String s = getString(a);
+        return s == null ? null : new NusaSQLXML(s);
+    }
     @Override public java.sql.Time getTime(String a) throws SQLException { throw unsupported(); }
     @Override public java.sql.Time getTime(String a, java.util.Calendar b) throws SQLException { throw unsupported(); }
     @Override public java.sql.Time getTime(int a) throws SQLException { throw unsupported(); }

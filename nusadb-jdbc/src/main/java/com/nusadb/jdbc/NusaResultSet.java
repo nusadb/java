@@ -640,6 +640,18 @@ final class NusaResultSet extends UpdatingResultSet {
         return s == null ? null : new NusaArray("text", NusaArray.parse(s));
     }
 
+    /** An XML value read from its text. */
+    @Override
+    public java.sql.SQLXML getSQLXML(int columnIndex) throws SQLException {
+        String s = text(columnIndex);
+        return s == null ? null : new NusaSQLXML(s);
+    }
+
+    @Override
+    public java.sql.SQLXML getSQLXML(String columnLabel) throws SQLException {
+        return getSQLXML(findColumn(columnLabel));
+    }
+
     @Override
     public String getNString(int columnIndex) throws SQLException {
         return getString(columnIndex);
@@ -749,6 +761,9 @@ final class NusaResultSet extends UpdatingResultSet {
         }
         if (type == java.sql.Array.class) {
             return getArray(columnIndex);
+        }
+        if (type == java.sql.SQLXML.class) {
+            return getSQLXML(columnIndex);
         }
         String s = text(columnIndex); // sets wasNull() for every branch below
         if (s == null) {

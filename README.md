@@ -380,6 +380,16 @@ in `setObject` read their source in full and send it as text or bytea. `Connecti
 `createBlob()` give an in-memory value to fill. JPA `@Lob String` and `@Lob byte[]` map to these
 columns.
 
+### XML (`SQLXML`)
+
+The server has no XML type; an XML document is kept in a `text` column. `Connection.createSQLXML`,
+`setSQLXML`, `getSQLXML` (and `getObject(.., SQLXML.class)`, `updateSQLXML`) carry it as text. A
+value can be written as a string, a character or byte stream, or through a `DOMResult`,
+`SAXResult`, `StAXResult` or `StreamResult`, and read the same ways as a `DOMSource`, `SAXSource`,
+`StAXSource` or `StreamSource`. Parsing does not load a DTD or resolve an external entity, so a
+document that declares one is refused (SQLState `2200M`). The server does not check that the text
+is well-formed XML.
+
 ### Arrays
 
 `setArray` / `createArrayOf` (and a Java array or `Collection` in `setObject`) send the array

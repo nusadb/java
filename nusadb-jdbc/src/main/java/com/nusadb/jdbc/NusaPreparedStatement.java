@@ -168,6 +168,13 @@ class NusaPreparedStatement extends AbstractPreparedStatement {
         set(parameterIndex, x == null ? null : bytes(x), textTag());
     }
 
+    /** An XML value is sent as its text (the server stores XML in a text column). */
+    @Override
+    public void setSQLXML(int parameterIndex, java.sql.SQLXML xmlObject) throws SQLException {
+        setString(parameterIndex, xmlObject == null ? null
+                : xmlObject instanceof NusaSQLXML x ? x.text() : xmlObject.getString());
+    }
+
     @Override
     public void setBytes(int parameterIndex, byte[] x) throws SQLException {
         // Send as the BYTEA text form `\x<hex>` so the server coerces it into a BYTEA column.
@@ -388,6 +395,8 @@ class NusaPreparedStatement extends AbstractPreparedStatement {
             setClob(parameterIndex, (java.sql.Clob) x);
         } else if (x instanceof java.sql.Blob) {
             setBlob(parameterIndex, (java.sql.Blob) x);
+        } else if (x instanceof java.sql.SQLXML) {
+            setSQLXML(parameterIndex, (java.sql.SQLXML) x);
         } else if (x instanceof Boolean) {
             setBoolean(parameterIndex, (Boolean) x);
         } else if (x instanceof java.sql.Array) {
