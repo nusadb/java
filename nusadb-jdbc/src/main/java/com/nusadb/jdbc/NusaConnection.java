@@ -483,6 +483,7 @@ final class NusaConnection implements Connection, NusaListener {
     public Statement createStatement(int rsType, int rsConcurrency) throws SQLException {
         NusaStatement st = (NusaStatement) createStatement();
         st.resultSetType(rsType);
+        st.concurrency(rsConcurrency);
         return st;
     }
 
@@ -490,6 +491,7 @@ final class NusaConnection implements Connection, NusaListener {
     public PreparedStatement prepareStatement(String sql, int rsType, int rsConcurrency) throws SQLException {
         NusaPreparedStatement ps = (NusaPreparedStatement) prepareStatement(sql);
         ps.resultSetType(rsType);
+        ps.concurrency(rsConcurrency);
         return ps;
     }
 

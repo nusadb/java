@@ -162,6 +162,19 @@ freely: `previous`, `absolute`, `relative`, `first`, `last`, `beforeFirst`, `aft
 for `query.scroll()`. A forward-only result set reports its row numbers and position
 (`getRow`, `isFirst`, `isLast`) but refuses to move back.
 
+### Updatable result sets
+
+A statement created with `ResultSet.CONCUR_UPDATABLE` gives result sets that change the table:
+`updateXxx` then `updateRow()`, `moveToInsertRow()` then `insertRow()`, `deleteRow()`, and
+`refreshRow()` to read the row again. The query must select from one table (no join, grouping,
+`DISTINCT` or set operation) and include its whole primary key; a result column is written to the
+table column of the same name, so an expression or a renamed column cannot be updated. Each change
+is one statement on the connection, in its open transaction when there is one, and the row shows
+the values as stored afterwards. An inserted row is added at the end of the result set and a
+deleted one is taken out of it. Such a result set reads all its rows at once, even with a fetch
+size. A query that cannot be written back still runs; the first change then fails with SQLState
+`24000` saying why.
+
 ### Statement reuse
 
 Frameworks create a new `PreparedStatement` for every query (Hibernate, `JdbcTemplate`). The
@@ -376,8 +389,7 @@ server does not report the element type. `getString` returns the text form.
 
 ## Not implemented yet
 
-Updatable result sets (`CONCUR_UPDATABLE`), and `CallableStatement` parameters by name, throw
-`SQLFeatureNotSupportedException` where called.
+`CallableStatement` parameters by name throw `SQLFeatureNotSupportedException` where called.
 
 ## Timeouts and cancellation
 

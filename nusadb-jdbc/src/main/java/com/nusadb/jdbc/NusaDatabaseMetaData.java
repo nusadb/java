@@ -954,7 +954,8 @@ final class NusaDatabaseMetaData implements DatabaseMetaData {
 
     @Override
     public boolean supportsResultSetConcurrency(int type, int concurrency) {
-        return supportsResultSetType(type) && concurrency == ResultSet.CONCUR_READ_ONLY;
+        return supportsResultSetType(type)
+                && (concurrency == ResultSet.CONCUR_READ_ONLY || concurrency == ResultSet.CONCUR_UPDATABLE);
     }
 
     @Override
@@ -1389,17 +1390,17 @@ final class NusaDatabaseMetaData implements DatabaseMetaData {
 
     @Override
     public boolean ownUpdatesAreVisible(int type) {
-        return false;
+        return supportsResultSetType(type);
     }
 
     @Override
     public boolean ownDeletesAreVisible(int type) {
-        return false;
+        return supportsResultSetType(type);
     }
 
     @Override
     public boolean ownInsertsAreVisible(int type) {
-        return false;
+        return supportsResultSetType(type);
     }
 
     @Override

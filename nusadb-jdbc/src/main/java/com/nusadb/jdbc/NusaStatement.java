@@ -24,6 +24,10 @@ class NusaStatement implements Statement {
     private boolean escapeProcessing = true;
     /** {@link ResultSet#TYPE_FORWARD_ONLY} or {@link ResultSet#TYPE_SCROLL_INSENSITIVE}. */
     private int resultSetType = ResultSet.TYPE_FORWARD_ONLY;
+    /** {@link ResultSet#CONCUR_READ_ONLY} or {@link ResultSet#CONCUR_UPDATABLE}. */
+    private int concurrency = ResultSet.CONCUR_READ_ONLY;
+    /** The SQL of the last query run through this statement, for an updatable result set. */
+    private String querySql;
     private ResultSet current;
     private long updateCount = -1;
     private int fetchSize;
@@ -122,7 +126,11 @@ class NusaStatement implements Statement {
         closeCurrent();
         generatedKeys = null;
         if (!result.columns.isEmpty()) {
-            current = new NusaResultSet(this, result, narrow(maxRows));
+            NusaResultSet rs = new NusaResultSet(this, result, narrow(maxRows));
+            if (concurrency == ResultSet.CONCUR_UPDATABLE) {
+                rs.updatable(new RowUpdater(connection, querySql()));
+            }
+            current = rs;
             updateCount = -1;
         } else {
             current = null;
@@ -147,7 +155,13 @@ class NusaStatement implements Statement {
      * read, instead of all at once: whenever a fetch size is set.
      */
     boolean streams() throws SQLException {
-        return fetchSize > 0 && resultSetType == ResultSet.TYPE_FORWARD_ONLY; // scrolling needs every row
+        // scrolling and updating need every row
+        return fetchSize > 0 && resultSetType == ResultSet.TYPE_FORWARD_ONLY && concurrency == ResultSet.CONCUR_READ_ONLY;
+    }
+
+    /** The SQL of the query whose result set is being made. */
+    String querySql() {
+        return querySql;
     }
 
     /** A query whose rows are read lazily: its result set, or the update count of a non-query. */
@@ -273,6 +287,7 @@ class NusaStatement implements Statement {
     public ResultSet executeQuery(String written) throws SQLException {
         ensureOpen();
         String sql = escaped(written);
+        querySql = sql;
         if (!streamQuery(sql)) {
             apply(run(() -> connection.execSimple(sql)));
         }
@@ -313,6 +328,7 @@ class NusaStatement implements Statement {
     public boolean execute(String written) throws SQLException {
         ensureOpen();
         String sql = escaped(written);
+        querySql = sql;
         if (!streamQuery(sql)) {
             apply(run(() -> connection.execSimple(sql)));
         }
@@ -416,7 +432,15 @@ class NusaStatement implements Statement {
 
     @Override
     public int getResultSetConcurrency() {
-        return ResultSet.CONCUR_READ_ONLY;
+        return concurrency;
+    }
+
+    /** The concurrency asked for at creation. */
+    void concurrency(int concurrency) throws SQLException {
+        if (concurrency != ResultSet.CONCUR_READ_ONLY && concurrency != ResultSet.CONCUR_UPDATABLE) {
+            throw new SQLException("nusadb: unknown result set concurrency " + concurrency, "HY024");
+        }
+        this.concurrency = concurrency;
     }
 
     @Override

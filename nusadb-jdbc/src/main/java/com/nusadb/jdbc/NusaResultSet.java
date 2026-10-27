@@ -26,10 +26,11 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * A forward-only, read-only {@link java.sql.ResultSet} over a collected {@link Wire.Result}, or
- * over an open portal read one chunk at a time ({@link NusaCursor}).
+ * A {@link java.sql.ResultSet} over a collected {@link Wire.Result}, or over an open portal read one
+ * chunk at a time ({@link NusaCursor}). With a {@link RowUpdater} it is updatable
+ * ({@code CONCUR_UPDATABLE}): its rows are then all at hand and changes are written through it.
  */
-final class NusaResultSet extends AbstractResultSet {
+final class NusaResultSet extends UpdatingResultSet {
     private final NusaStatement statement;
     private final List<String> columns;
     private final List<String> columnTypes;
@@ -44,6 +45,11 @@ final class NusaResultSet extends AbstractResultSet {
     private int fetchDirection = FETCH_FORWARD;
     private boolean lastWasNull;
     private boolean closed;
+    /** Writes changes back to the table; null for a read-only result set. */
+    private RowUpdater updater;
+    /** Changes to the current row, or the insert row, by 0-based column. */
+    private final java.util.Map<Integer, Object> changes = new java.util.LinkedHashMap<>();
+    private boolean onInsertRow;
 
     NusaResultSet(NusaStatement statement, Wire.Result result) {
         this(statement, result, 0);
@@ -69,6 +75,25 @@ final class NusaResultSet extends AbstractResultSet {
         this.rows = cursor.fetch();
     }
 
+    /** Makes this result set updatable through {@code updater}. */
+    void updatable(RowUpdater updater) {
+        this.updater = updater;
+        this.rows = new java.util.ArrayList<>(rows);
+    }
+
+    List<String> columnLabels() {
+        return columns;
+    }
+
+    /** The cells of the current row, as received. */
+    List<byte[]> currentCells() throws SQLException {
+        ensureOpen();
+        if (rowIndex < 0 || rowIndex >= rows.size()) {
+            throw new SQLException("nusadb: no current row", "24000");
+        }
+        return rows.get(rowIndex);
+    }
+
     private void ensureOpen() throws SQLException {
         if (closed) {
             throw new SQLException("nusadb: result set is closed", "24000");
@@ -77,7 +102,7 @@ final class NusaResultSet extends AbstractResultSet {
 
     private byte[] cell(int columnIndex) throws SQLException {
         ensureOpen();
-        if (rowIndex < 0 || rowIndex >= rows.size()) {
+        if (onInsertRow || rowIndex < 0 || rowIndex >= rows.size()) {
             throw new SQLException("nusadb: no current row", "24000");
         }
         if (columnIndex < 1 || columnIndex > columns.size()) {
@@ -106,6 +131,7 @@ final class NusaResultSet extends AbstractResultSet {
     @Override
     public boolean next() throws SQLException {
         ensureOpen();
+        leaveInsertRow();
         if (rowIndex < rows.size()) {
             rowIndex++;
         }
@@ -128,6 +154,7 @@ final class NusaResultSet extends AbstractResultSet {
 
     /** Moves to the 0-based {@code index}, clamped to just before the first or after the last row. */
     private boolean moveTo(int index) {
+        leaveInsertRow();
         rowIndex = Math.max(-1, Math.min(index, rows.size()));
         return rowIndex >= 0 && rowIndex < rows.size();
     }
@@ -218,7 +245,127 @@ final class NusaResultSet extends AbstractResultSet {
 
     @Override
     public int getConcurrency() {
-        return CONCUR_READ_ONLY;
+        return updater != null ? CONCUR_UPDATABLE : CONCUR_READ_ONLY;
+    }
+
+    // --- updating (CONCUR_UPDATABLE) ---
+
+    private void leaveInsertRow() {
+        if (onInsertRow) {
+            onInsertRow = false;
+            changes.clear();
+        }
+    }
+
+    private RowUpdater updater() throws SQLException {
+        ensureOpen();
+        if (updater == null) {
+            throw new SQLException("nusadb: the result set is CONCUR_READ_ONLY; create the statement with"
+                    + " ResultSet.CONCUR_UPDATABLE to change rows through it", "24000");
+        }
+        return updater;
+    }
+
+    private void ensureCurrentRow() throws SQLException {
+        if (onInsertRow) {
+            throw new SQLException("nusadb: not allowed on the insert row", "24000");
+        }
+        if (rowIndex < 0 || rowIndex >= rows.size()) {
+            throw new SQLException("nusadb: no current row", "24000");
+        }
+    }
+
+    @Override
+    void update(int columnIndex, Object value) throws SQLException {
+        RowUpdater u = updater();
+        if (columnIndex < 1 || columnIndex > columns.size()) {
+            throw new SQLException("nusadb: column index out of range: " + columnIndex, "07009");
+        }
+        if (!onInsertRow) {
+            ensureCurrentRow();
+        }
+        u.checkColumn(columns, columnIndex - 1);
+        changes.put(columnIndex - 1, value);
+    }
+
+    @Override
+    public void updateRow() throws SQLException {
+        RowUpdater u = updater();
+        ensureCurrentRow();
+        if (changes.isEmpty()) {
+            return;
+        }
+        rows.set(rowIndex, u.update(columns, rows.get(rowIndex), changes));
+        changes.clear();
+    }
+
+    @Override
+    public void insertRow() throws SQLException {
+        RowUpdater u = updater();
+        if (!onInsertRow) {
+            throw new SQLException("nusadb: insertRow needs moveToInsertRow first", "24000");
+        }
+        rows.add(u.insert(columns, changes));
+        changes.clear();
+    }
+
+    @Override
+    public void deleteRow() throws SQLException {
+        RowUpdater u = updater();
+        ensureCurrentRow();
+        u.delete(columns, rows.get(rowIndex));
+        rows.remove(rowIndex);
+        rowIndex--;
+        changes.clear();
+    }
+
+    @Override
+    public void refreshRow() throws SQLException {
+        RowUpdater u = updater();
+        ensureCurrentRow();
+        rows.set(rowIndex, u.refresh(columns, rows.get(rowIndex)));
+        changes.clear();
+    }
+
+    @Override
+    public void cancelRowUpdates() throws SQLException {
+        updater();
+        if (onInsertRow) {
+            throw new SQLException("nusadb: cancelRowUpdates is not allowed on the insert row", "24000");
+        }
+        changes.clear();
+    }
+
+    @Override
+    public void moveToInsertRow() throws SQLException {
+        updater().check(columns);
+        changes.clear();
+        onInsertRow = true;
+    }
+
+    @Override
+    public void moveToCurrentRow() throws SQLException {
+        updater();
+        leaveInsertRow();
+    }
+
+    /** Changes are not marked on the row: re-reading it shows them instead (ownUpdatesAreVisible). */
+    @Override
+    public boolean rowUpdated() throws SQLException {
+        ensureOpen();
+        return false;
+    }
+
+    @Override
+    public boolean rowInserted() throws SQLException {
+        ensureOpen();
+        return false;
+    }
+
+    @Override
+    public boolean rowDeleted() throws SQLException {
+        ensureOpen();
+        return false;
     }
 
     @Override

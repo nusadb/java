@@ -62,6 +62,17 @@ class NusaPreparedStatement extends AbstractPreparedStatement {
         this.captureKeys = captureKeys;
     }
 
+    /** The query text, for an updatable result set. */
+    @Override
+    String querySql() {
+        return sql;
+    }
+
+    /** Binds {@code text} with no declared type: the server types it from where it is used. */
+    void setUntyped(int parameterIndex, String text) throws SQLException {
+        set(parameterIndex, text == null ? null : bytes(text));
+    }
+
     private void set(int parameterIndex, byte[] value) throws SQLException {
         set(parameterIndex, value, Protocol.TAG_INFER);
     }
